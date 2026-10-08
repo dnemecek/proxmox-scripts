@@ -1,36 +1,275 @@
 #!/bin/bash
+# =============================================================================
+# ceph_osd_restart.sh - Ceph OSD Restart Script
+# =============================================================================
+# Ansible-ready skript pro restart Ceph OSD
+# - Bez parametru: restart vsech OSD sekvencne
+# - --slow: restart pouze OSD hlasicich BlueStore slow operations
+# - --dry-run: zobrazi plan bez provedeni
+#
+# Umisteni: ~/bin/ceph_osd_restart.sh (na vsech PVE nodech)
+# Konfigurace: ~/bin/ceph_osd_restart.conf
+# Log: /var/log/ceph_osd_restart.log
+#
+# Autor: David Nemecek | 2026
+# =============================================================================
 
-# Získej název aktuálního nodu
-current_node=$(hostname)
+set -o pipefail
 
-# Inicializuj proměnnou pro uložení názvu nodu
-node=""
+# -----------------------------------------------------------------------------
+# Konfigurace
+# -----------------------------------------------------------------------------
+SCRIPT_NAME="ceph_osd_restart"
+SCRIPT_VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}.conf"
+LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 
-# Zpracuj výstup z ceph osd tree
-ceph osd tree | while read -r line; do
-    # Zjisti, zda je řádek typu "host" (nese jméno nodu)
-    if echo "$line" | grep -q "host"; then
-        # Ulož jméno hostu (nodu)
-        node=$(echo "$line" | awk '{print $4}')
+# Defaults (mohou byt prepesany v .conf)
+RESTART_DELAY=90
+CURRENT_NODE=$(hostname)
+
+# Nacti konfiguraci pokud existuje
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+fi
+
+# Runtime promenne
+MODE="all"
+DRY_RUN=false
+CHANGED=false
+RESTARTED=0
+SKIPPED=0
+FAILED=0
+
+# -----------------------------------------------------------------------------
+# Funkce - Logging
+# -----------------------------------------------------------------------------
+log_msg() {
+    local level="$1"
+    local msg="$2"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "${timestamp} [${level}] ${msg}" >> "$LOG_FILE"
+}
+
+log_info()  { log_msg "INFO"  "$1"; }
+log_warn()  { log_msg "WARN"  "$1"; }
+log_error() { log_msg "ERROR" "$1"; }
+
+# -----------------------------------------------------------------------------
+# Funkce - JSON Output (stdout pro Ansible)
+# -----------------------------------------------------------------------------
+json_output() {
+    local changed="$1"
+    local msg="$2"
+    echo "{\"changed\": ${changed}, \"reboot_required\": false, \"msg\": \"${msg}\"}"
+}
+
+# -----------------------------------------------------------------------------
+# Funkce - Help
+# -----------------------------------------------------------------------------
+show_help() {
+    cat << EOF
+${SCRIPT_NAME} v${SCRIPT_VERSION} - Ceph OSD Restart Script
+
+Usage: ${SCRIPT_NAME}.sh [OPTIONS]
+
+Options:
+  --slow      Restart only OSDs reporting BlueStore slow operations
+  --dry-run   Show what would be done without making changes
+  --help      Show this help message
+
+Examples:
+  ${SCRIPT_NAME}.sh              # Restart all OSDs sequentially
+  ${SCRIPT_NAME}.sh --slow       # Restart only slow OSDs
+  ${SCRIPT_NAME}.sh --slow --dry-run  # Show slow OSDs without restart
+
+Exit codes:
+  0  Success
+  1  Error
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Funkce - Ziskej slow OSD z ceph health detail
+# -----------------------------------------------------------------------------
+get_slow_osds() {
+    # Hleda radky: "osd.XX observed slow operation indications in BlueStore"
+    ceph health detail 2>/dev/null | \
+        grep "observed slow operation" | \
+        grep -oE "osd\.[0-9]+" | \
+        sed 's/osd\.//' | \
+        sort -n | \
+        uniq
+}
+
+# -----------------------------------------------------------------------------
+# Funkce - Ziskej vsechny OSD z ceph osd tree
+# -----------------------------------------------------------------------------
+get_all_osds() {
+    ceph osd tree 2>/dev/null | \
+        grep -E "^\s*[0-9]+" | \
+        awk '{print $1}' | \
+        sort -n
+}
+
+# -----------------------------------------------------------------------------
+# Funkce - Ziskej node pro dane OSD
+# -----------------------------------------------------------------------------
+get_osd_node() {
+    local osd_id="$1"
+    local node=""
+    local current_host=""
     
-    # Pokud řádek obsahuje OSD (např. "osd.6"), restartuj OSD na odpovídajícím nodu
-    elif echo "$line" | grep -q "osd\."; then
-        osd_id=$(echo "$line" | awk '{print $1}')
-        echo "Restarting OSD $osd_id on node $node"
-        
-        # Pokud je node stejný jako aktuální node, restartuj lokálně
-        if [ "$node" == "$current_node" ]; then
-            echo "Restarting locally: OSD $osd_id on $node"
-            sudo systemctl restart ceph-osd@${osd_id/osd./}
-        else
-            # Pokud se jedná o jiný node, použij SSH pro restart
-            echo "Restarting remotely: OSD $osd_id on $node via SSH"
-            ssh -n -o BatchMode=yes "$node" "sudo systemctl restart ceph-osd@${osd_id/osd./}"
+    while read -r line; do
+        if echo "$line" | grep -q "host"; then
+            current_host=$(echo "$line" | awk '{print $4}')
+        elif echo "$line" | grep -qE "^\s*${osd_id}\s+"; then
+            node="$current_host"
+            break
         fi
-        
-        # Pauza mezi restarty, minimálně 30 sekund
-        echo "Waiting for 90 seconds before restarting the next OSD..."
-        sleep 90
+    done < <(ceph osd tree 2>/dev/null)
+    
+    echo "$node"
+}
+
+# -----------------------------------------------------------------------------
+# Funkce - Restart jednoho OSD
+# -----------------------------------------------------------------------------
+restart_osd() {
+    local osd_id="$1"
+    local node
+    node=$(get_osd_node "$osd_id")
+    
+    if [[ -z "$node" ]]; then
+        log_error "Cannot find node for osd.${osd_id}"
+        ((FAILED++))
+        return 1
+    fi
+    
+    # Kontrola ok-to-stop
+    if ! ceph osd ok-to-stop "osd.${osd_id}" &>/dev/null; then
+        log_warn "osd.${osd_id} - ok-to-stop check failed, skipping"
+        ((SKIPPED++))
+        return 0
+    fi
+    
+    log_info "Restarting osd.${osd_id} on ${node}"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would restart osd.${osd_id} on ${node}"
+        return 0
+    fi
+    
+    # Restart - lokalne nebo pres SSH
+    local restart_result=0
+    if [[ "$node" == "$CURRENT_NODE" ]]; then
+        systemctl restart "ceph-osd@${osd_id}" || restart_result=$?
+    else
+        ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$node" \
+            "systemctl restart ceph-osd@${osd_id}" || restart_result=$?
+    fi
+    
+    if [[ $restart_result -eq 0 ]]; then
+        log_info "osd.${osd_id} restarted successfully"
+        ((RESTARTED++))
+        CHANGED=true
+    else
+        log_error "osd.${osd_id} restart failed (exit code: ${restart_result})"
+        ((FAILED++))
+        return 1
+    fi
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Argument parsing
+# -----------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --slow)
+            MODE="slow"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+log_info "=== ${SCRIPT_NAME} v${SCRIPT_VERSION} started ==="
+log_info "Mode: ${MODE}, Dry-run: ${DRY_RUN}"
+
+# Ziskej seznam OSD k restartu
+declare -a osd_list
+if [[ "$MODE" == "slow" ]]; then
+    mapfile -t osd_list < <(get_slow_osds)
+else
+    mapfile -t osd_list < <(get_all_osds)
+fi
+
+osd_count=${#osd_list[@]}
+log_info "Found ${osd_count} OSD(s) to process"
+
+# Kontrola - zadne OSD
+if [[ $osd_count -eq 0 ]]; then
+    log_info "No OSDs to restart"
+    if [[ "$MODE" == "slow" ]]; then
+        json_output "false" "Mode: slow, No slow OSDs detected"
+    else
+        json_output "false" "Mode: all, No OSDs found in cluster"
+    fi
+    exit 0
+fi
+
+# Dry-run - pouze vypis
+if [[ "$DRY_RUN" == "true" ]]; then
+    log_info "[DRY-RUN] Would restart: ${osd_list[*]}"
+    json_output "false" "Mode: ${MODE}, Dry-run: ${osd_count} OSD(s) would be restarted"
+    exit 0
+fi
+
+# Restart OSD sekvencne
+for osd_id in "${osd_list[@]}"; do
+    restart_osd "$osd_id"
+    
+    # Pauza mezi restarty (krome posledniho)
+    if [[ "$osd_id" != "${osd_list[-1]}" ]]; then
+        log_info "Waiting ${RESTART_DELAY}s before next restart..."
+        sleep "$RESTART_DELAY"
     fi
 done
-ceph crash archive-all
+
+# Archivuj ceph crash logy
+log_info "Archiving ceph crash logs"
+ceph crash archive-all &>/dev/null || true
+
+# Vysledek
+log_info "Completed: Restarted=${RESTARTED}, Skipped=${SKIPPED}, Failed=${FAILED}"
+log_info "=== ${SCRIPT_NAME} finished ==="
+
+# JSON output
+if [[ $FAILED -gt 0 ]]; then
+    json_output "true" "Mode: ${MODE}, Restarted: ${RESTARTED}, Skipped: ${SKIPPED}, Failed: ${FAILED}"
+    exit 1
+else
+    changed_str="false"
+    [[ "$CHANGED" == "true" ]] && changed_str="true"
+    json_output "${changed_str}" "Mode: ${MODE}, Restarted: ${RESTARTED}, Skipped: ${SKIPPED}, Failed: ${FAILED}"
+    exit 0
+fi
