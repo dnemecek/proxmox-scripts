@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+._*
+
+# Tajnosti -- NIKDY do gitu
+.env
+*.env
+!*.env.example
+*.key
+*.pem
+*.cred
+*.kdbx
+*.sql
+*.dump
+secrets/
+
+# Lokalni / scratch
+local/
+.claude/settings.local.json
+
+# Logy
+*.log
+
+# Editor backupy
+*~
+*.bak
