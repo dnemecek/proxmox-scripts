@@ -1,7 +1,11 @@
 #!/bin/bash
-# ============================================================================
-# ceph-osd-latency.sh - BlueStore latence lokalnich OSD podle modelu disku
-# ============================================================================
+#
+# Soubor: ceph-osd-latency.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: BlueStore latence lokalnich OSD podle modelu disku
+#
 # Pouziti:  ./ceph-osd-latency.sh [--class hdd|ssd|nvme]
 #
 # Co dela: pro kazde OSD na tomto node precte z admin socketu BlueStore
@@ -15,11 +19,10 @@
 #           aio_wait state_aio_wait_lat  cekani na zapis dat na disk
 #           queued   state_kv_queued_lat cekani ve fronte na commit
 #
-# David Nemecek | 2026
-# ============================================================================
 
 set -euo pipefail
 
+# Cil: Vypise pouziti na stderr a ukonci skript s kodem 1.
 usage() { echo "Usage: $0 [--class hdd|ssd|nvme]" >&2; exit 1; }
 
 FILTER_CLASS=""
@@ -36,7 +39,10 @@ shopt -s nullglob
 sockets=(/var/run/ceph/ceph-osd.*.asok)
 [[ ${#sockets[@]} -gt 0 ]] || { echo "No local OSD admin sockets found" >&2; exit 1; }
 
-# JSON z ceph se zpracuje v python3 (soucast Proxmox VE, jq tam byt nemusi)
+# Cil: Z perf dump OSD (stdin) a metadat OSD vypise jeden radek tabulky: osd, trida, latence v ms a model.
+# Mantinely: Argumenty: nazev OSD, device class, JSON metadat; jen cte; JSON z ceph se zpracuje
+#            v python3 (soucast Proxmox VE, jq tam byt nemusi).
+# Kontrola: Pri chybe parsovani python skonci nenulove a volajici radek preskoci (|| true).
 row() {
     python3 -c '
 import json, re, sys

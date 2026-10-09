@@ -1,4 +1,11 @@
 #!/bin/bash
+#
+# Soubor: auto_deep_scrub.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Spusti deep-scrub na PG, ktere Ceph hlasi jako not deep-scrubbed in time
+#
 
 # Nastaveni logovani
 exec 1> >(logger -s -t $(basename $0)) 2>&1
@@ -7,7 +14,7 @@ exec 1> >(logger -s -t $(basename $0)) 2>&1
 LOG_FILE="/var/log/ceph/deep_scrub.log"
 SLEEP_BETWEEN=2          # Pauza mezi operacemi v sekundach
 
-# Funkce pro logovani
+# Cil: Zapise zpravu s casovou znackou na stdout a do LOG_FILE.
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $1" | tee -a $LOG_FILE

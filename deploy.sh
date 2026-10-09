@@ -1,7 +1,11 @@
 #!/bin/bash
-# ============================================================================
-# proxmox-scripts - Deploy na Proxmox VE node
-# ============================================================================
+#
+# Soubor: deploy.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Deploy skriptu proxmox-scripts na Proxmox VE node
+#
 # Pouziti:  ./deploy.sh [user@]<node> [--config-dir DIR]
 #           ./deploy.sh pve1                       (user = root)
 #           ./deploy.sh pve1 --config-dir ../muj-cluster/conf
@@ -11,13 +15,12 @@
 #          soubory (napr. konfigurace s heslem) se nekopiruji. Na node nic
 #          nemaze, soubory mimo seznam nechava.
 #
-# David Nemecek | 2026
-# ============================================================================
 
 set -euo pipefail
 
 DEST_DIR="/root/bin"
 
+# Cil: Vypise pouziti na stderr a ukonci skript s kodem 1.
 usage() { echo "Usage: $0 [user@]<node> [--config-dir DIR]" >&2; exit 1; }
 
 TARGET="${1:-}"

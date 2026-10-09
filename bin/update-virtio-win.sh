@@ -1,7 +1,11 @@
 #!/bin/bash
-# ============================================================================
-# update-virtio-win.sh - Stazeni aktualniho virtio-win ISO do ISO storage
-# ============================================================================
+#
+# Soubor: update-virtio-win.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Stazeni aktualniho virtio-win ISO do ISO storage
+#
 # Pouziti:  ./update-virtio-win.sh [TARGET_DIR]
 #           ./update-virtio-win.sh                              (storage local)
 #           ./update-virtio-win.sh /mnt/pve/<storage>/template/iso
@@ -10,8 +14,6 @@
 #          TARGET_DIR jeste neni, a nastavi symlink virtio-win-latest.iso.
 #          Opakovany beh bez nove verze nic nemeni.
 #
-# David Nemecek | 2026
-# ============================================================================
 
 set -euo pipefail
 

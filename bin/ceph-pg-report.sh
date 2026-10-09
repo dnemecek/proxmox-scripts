@@ -1,6 +1,11 @@
 #!/bin/bash
-# ceph-pg-report.sh - Identifikace VM zasazenych problemy Ceph PG
-# Autor: David Nemecek | prosinec 2025
+#
+# Soubor: ceph-pg-report.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2025-12
+# Popis: Identifikace VM zasazenych problemy Ceph PG
+#
 
 echo "=== CEPH PG Health Report ==="
 echo "Cluster: $(pvesh get /cluster/status --output-format json | jq -r '.[] | select(.type=="cluster") | .name')"
@@ -39,7 +44,9 @@ while IFS='|' read -r vmid status; do
     [ -n "$vmid" ] && VM_STATUS_CACHE[$vmid]=$status
 done < <(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[] | "\(.vmid)|\(.status)"')
 
-# Funkce pro zjisteni nazvu, stavu a nodu VM z konfigurace clusteru
+# Cil: Vypise "nazev|stav|node" VM podle konfigurace v /etc/pve a cache VM_STATUS_CACHE.
+# Mantinely: Vstup je VMID; jen cte; neznamy nazev nebo node = unknown, chybejici stav = stopped.
+# Kontrola: Vystup ma vzdy tri polozky oddelene znakem '|'.
 get_vm_info() {
     local vmid=$1
     local vm_name=""

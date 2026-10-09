@@ -1,7 +1,11 @@
 #!/bin/bash
-# =============================================================================
-# ceph_osd_restart.sh - Ceph OSD Restart Script
-# =============================================================================
+#
+# Soubor: ceph_osd_restart.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Postupny restart Ceph OSD (vsech, nebo jen hlasicich BlueStore slow operations)
+#
 # Ansible-ready skript pro restart Ceph OSD
 # - Bez parametru: restart vsech OSD sekvencne
 # - --slow: restart pouze OSD hlasicich BlueStore slow operations
@@ -11,8 +15,6 @@
 # Konfigurace: ~/bin/ceph_osd_restart.conf
 # Log: /var/log/ceph_osd_restart.log
 #
-# Autor: David Nemecek | 2026
-# =============================================================================
 
 set -o pipefail
 
@@ -42,9 +44,7 @@ RESTARTED=0
 SKIPPED=0
 FAILED=0
 
-# -----------------------------------------------------------------------------
-# Funkce - Logovani
-# -----------------------------------------------------------------------------
+# Cil: Zapise zpravu s urovni a casovou znackou do LOG_FILE.
 log_msg() {
     local level="$1"
     local msg="$2"
@@ -53,22 +53,19 @@ log_msg() {
     echo "${timestamp} [${level}] ${msg}" >> "$LOG_FILE"
 }
 
+# Cil: Zkratky pro log_msg podle urovne.
 log_info()  { log_msg "INFO"  "$1"; }
 log_warn()  { log_msg "WARN"  "$1"; }
 log_error() { log_msg "ERROR" "$1"; }
 
-# -----------------------------------------------------------------------------
-# Funkce - JSON vystup (stdout pro Ansible)
-# -----------------------------------------------------------------------------
+# Cil: Vypise na stdout jednoradkovy JSON vysledek pro Ansible (changed, msg).
 json_output() {
     local changed="$1"
     local msg="$2"
     echo "{\"changed\": ${changed}, \"reboot_required\": false, \"msg\": \"${msg}\"}"
 }
 
-# -----------------------------------------------------------------------------
-# Funkce - Help
-# -----------------------------------------------------------------------------
+# Cil: Vypise napovedu k pouziti skriptu.
 show_help() {
     cat << EOF
 ${SCRIPT_NAME} v${SCRIPT_VERSION} - Ceph OSD Restart Script
@@ -91,9 +88,9 @@ Exit codes:
 EOF
 }
 
-# -----------------------------------------------------------------------------
-# Funkce - Ziskej slow OSD z ceph health detail
-# -----------------------------------------------------------------------------
+# Cil: Vypise ID OSD, ktera v ceph health detail hlasi BlueStore slow operations (serazena, bez duplicit).
+# Mantinely: Jen cte; vyzaduje funkcni ceph CLI; pri chybe ceph je vystup prazdny.
+# Kontrola: Prazdny vystup = zadna slow OSD; hlavni beh to vrati v JSON vystupu.
 get_slow_osds() {
     # Hleda radky: "osd.XX observed slow operation indications in BlueStore"
     ceph health detail 2>/dev/null | \
@@ -104,9 +101,9 @@ get_slow_osds() {
         uniq
 }
 
-# -----------------------------------------------------------------------------
-# Funkce - Ziskej vsechny OSD z ceph osd tree
-# -----------------------------------------------------------------------------
+# Cil: Vypise ID vsech OSD z ceph osd tree (serazena).
+# Mantinely: Jen cte; vyzaduje funkcni ceph CLI; pri chybe ceph je vystup prazdny.
+# Kontrola: Prazdny vystup = zadna OSD; hlavni beh to vrati v JSON vystupu.
 get_all_osds() {
     ceph osd tree 2>/dev/null | \
         grep -E "^\s*[0-9]+" | \
@@ -114,9 +111,9 @@ get_all_osds() {
         sort -n
 }
 
-# -----------------------------------------------------------------------------
-# Funkce - Ziskej node pro dane OSD
-# -----------------------------------------------------------------------------
+# Cil: Vypise nazev nodu, na kterem lezi zadane OSD, podle ceph osd tree.
+# Mantinely: Vstup je ciselne ID OSD; jen cte; predpoklada nazev hostu ve 4. sloupci radku host.
+# Kontrola: Prazdny vystup = node nenalezen; restart_osd to zaloguje jako chybu.
 get_osd_node() {
     local osd_id="$1"
     local node=""
@@ -134,9 +131,9 @@ get_osd_node() {
     echo "$node"
 }
 
-# -----------------------------------------------------------------------------
-# Funkce - Restart jednoho OSD
-# -----------------------------------------------------------------------------
+# Cil: Restartuje jedno OSD lokalne nebo pres SSH na jeho nodu a aktualizuje citace RESTARTED/SKIPPED/FAILED.
+# Mantinely: Restartuje jen po uspesnem ceph osd ok-to-stop; v dry-run nic nemeni; SSH jen v BatchMode.
+# Kontrola: Navratovy kod systemctl restart, zapis do logu a citacu; navratovy kod 1 = chyba.
 restart_osd() {
     local osd_id="$1"
     local node

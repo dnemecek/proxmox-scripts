@@ -1,8 +1,13 @@
 #!/bin/bash
-# vm_baseline_policy.sh
-# Verze: 1.1.0
+#
+# Soubor: vm_baseline_policy.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
 # Popis: Ansible-ready skript pro vynuceni VM baseline policy
 #        (cpu, machine, balloon, numa, agent, network queues)
+#
+# Verze: 1.1.0
 # Umisteni: /root/bin/vm_baseline_policy.sh
 # Pouziti: ./vm_baseline_policy.sh [VMID...]
 #          ./vm_baseline_policy.sh           - zpracuje vsechny VM
@@ -42,6 +47,9 @@ TARGET_VMIDS=""
 # ===========================================
 # KONTROLA ZAVISLOSTI
 # ===========================================
+# Cil: Overi dostupnost jq a qm; pri chybejici zavislosti vypise JSON chybu a ukonci skript.
+# Mantinely: Jen kontroluje PATH, nic nemeni.
+# Kontrola: Navratovy kod 1 a JSON s errors=1 pri chybejici zavislosti.
 check_dependencies() {
     local missing=()
 
@@ -54,7 +62,8 @@ check_dependencies() {
     fi
 
     if [ ${#missing[@]} -gt 0 ]; then
-        echo "{\"changed\": false, \"reboot_required\": false, \"poweroff_vms\": [], \"changes\": 0, \"errors\": 1, \"skipped\": 0, \"msg\": \"Missing dependencies: ${missing[*]}\"}"
+        echo "{\"changed\": false, \"reboot_required\": false, \"poweroff_vms\": [], \"changes\": 0," \
+            "\"errors\": 1, \"skipped\": 0, \"msg\": \"Missing dependencies: ${missing[*]}\"}"
         exit 1
     fi
 }
@@ -64,6 +73,7 @@ check_dependencies
 # ===========================================
 # FUNKCE: HELP
 # ===========================================
+# Cil: Vypise napovedu k pouziti skriptu a ukonci ho s kodem 0.
 show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS] [VMID...]
@@ -98,6 +108,7 @@ EOF
     exit 0
 }
 
+# Cil: Vypise verzi skriptu a ukonci ho s kodem 0.
 show_version() {
     echo "$SCRIPT_NAME version $SCRIPT_VERSION"
     exit 0
@@ -107,6 +118,7 @@ show_version() {
 # FUNKCE: LOGOVANI A VYSTUP
 # ===========================================
 
+# Cil: Zapise zpravu s urovni a casovou znackou do LOG_FILE.
 log() {
     local level="$1"
     local message="$2"
@@ -114,10 +126,12 @@ log() {
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
 }
 
+# Cil: Prida zpravu do souhrnu pro pole msg v JSON vystupu.
 add_message() {
     MESSAGES+=("$1")
 }
 
+# Cil: Prida VMID do seznamu VM vyzadujicich poweroff/poweron (bez duplicit).
 add_poweroff_vm() {
     local vmid="$1"
     # Pridat pouze pokud jeste neni v seznamu
@@ -126,6 +140,7 @@ add_poweroff_vm() {
     fi
 }
 
+# Cil: Vypise na stdout jednoradkovy JSON vysledek pro Ansible.
 output_json() {
     local msg=$(printf '%s; ' "${MESSAGES[@]}" | sed 's/; $//')
     [ -z "$msg" ] && msg="No changes required"
@@ -145,11 +160,15 @@ EOF
 # FUNKCE: CLUSTER OPERACE
 # ===========================================
 
+# Cil: Vypise nazev nodu, na kterem VM bezi, podle /etc/pve/.vmlist.
 get_vm_node() {
     local vmid="$1"
     jq -r ".ids.\"$vmid\".node // empty" /etc/pve/.vmlist
 }
 
+# Cil: Vypise nazev VM z qm config, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Jen cte; SSH jen v BatchMode s timeoutem 5 s.
+# Kontrola: Prazdny vystup = nazev nezjisten; volajici pouzije unknown.
 get_vm_name() {
     local vmid="$1"
     local vm_node="$2"
@@ -157,10 +176,14 @@ get_vm_name() {
     if [ "$vm_node" == "$CURRENT_NODE" ]; then
         qm config "$vmid" 2>/dev/null | grep "^name:" | cut -d' ' -f2
     else
-        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "root@$vm_node" "qm config $vmid" 2>/dev/null | grep "^name:" | cut -d' ' -f2
+        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "root@$vm_node" "qm config $vmid" 2>/dev/null |
+            grep "^name:" | cut -d' ' -f2
     fi
 }
 
+# Cil: Vypise konfiguraci VM z qm config, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Jen cte; SSH jen v BatchMode s timeoutem 5 s.
+# Kontrola: Prazdny vystup = konfiguraci nelze ziskat; volajici to zaloguje.
 get_vm_config() {
     local vmid="$1"
     local vm_node="$2"
@@ -172,6 +195,9 @@ get_vm_config() {
     fi
 }
 
+# Cil: Nastavi jeden parametr VM pres qm set, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Vstupy: VMID, nazev parametru, hodnota; SSH jen v BatchMode; stderr jde do LOG_FILE.
+# Kontrola: Navratovy kod qm set; 1 a ERROR v logu, pokud nelze zjistit node.
 run_qm_set() {
     local vmid="$1"
     local param="$2"
@@ -194,13 +220,13 @@ run_qm_set() {
 # FUNKCE: KONFIGURACE
 # ===========================================
 
+# Cil: Vrati 0, pokud je VMID v seznamu EXCLUDED_VMIDS, jinak 1.
 is_excluded() {
     local vmid="$1"
     echo ",$EXCLUDED_VMIDS," | grep -q ",$vmid,"
 }
 
-# Detekce OS kategorie podle prefixu ostype
-# Vraci: linux, windows, nebo excluded
+# Cil: Podle prefixu ostype vypise kategorii OS: linux, windows, nebo excluded.
 detect_os_category() {
     local ostype="$1"
     case "$ostype" in
@@ -210,6 +236,7 @@ detect_os_category() {
     esac
 }
 
+# Cil: Vypise hodnotu baseline parametru z configu (LINUX_* nebo WINDOWS_*) pro danou kategorii OS.
 get_baseline_value() {
     local os_category="$1"
     local param="$2"
@@ -229,6 +256,9 @@ get_baseline_value() {
 # FUNKCE: BACKUP
 # ===========================================
 
+# Cil: Zkopiruje konfiguraci VM z /etc/pve do BACKUP_DIR s casovou znackou v nazvu.
+# Mantinely: Puvodni konfiguraci nemeni; predpoklada pristup k /etc/pve (bezi na nodu clusteru).
+# Kontrola: Navratovy kod 1 a WARN v logu, pokud konfigurace neexistuje; cesta zalohy se zaloguje.
 backup_vm_config() {
     local vmid="$1"
     local vm_node="$2"
@@ -252,12 +282,14 @@ backup_vm_config() {
 # FUNKCE: EXTRAKCE PARAMETRU
 # ===========================================
 
+# Cil: Vypise hodnotu parametru z textu konfigurace VM.
 get_config_value() {
     local vm_config="$1"
     local param="$2"
     echo "$vm_config" | grep "^${param}:" | cut -d' ' -f2-
 }
 
+# Cil: Vypise pocet vCPU VM (cores * sockets, chybejici hodnota = 1).
 get_vcpu_count() {
     local vm_config="$1"
     local cores=$(get_config_value "$vm_config" "cores")
@@ -269,7 +301,7 @@ get_vcpu_count() {
     echo $((cores * sockets))
 }
 
-# Vypocet cilovych front pro sitova rozhrani
+# Cil: Vypise cilovy pocet front sitoveho rozhrani podle poctu vCPU a nastaveni NET_QUEUES.
 calculate_net_queues() {
     local vcpus="$1"
     local os_category="$2"
@@ -298,8 +330,7 @@ calculate_net_queues() {
 # FUNKCE: POROVNANI PARAMETRU
 # ===========================================
 
-# Kontrola zda machine type potrebuje update
-# Striktni porovnani - machine musi byt PRESNE baseline hodnota
+# Cil: Vrati 0, pokud se machine type lisi od baseline (striktni shoda), jinak 1.
 machine_needs_update() {
     local current="$1"
     local target="$2"
@@ -312,8 +343,7 @@ machine_needs_update() {
     return 0  # Potreba update
 }
 
-# Kontrola zda CPU potrebuje update
-# Striktni porovnani - CPU musi byt PRESNE baseline hodnota
+# Cil: Vrati 0, pokud se CPU typ lisi od baseline (striktni shoda), jinak 1.
 # cpu: host zpristupni vsechny CPU features, dalsi flagy jsou zbytecne
 cpu_needs_update() {
     local current="$1"
@@ -328,7 +358,7 @@ cpu_needs_update() {
     return 0  # Potreba update
 }
 
-# Kontrola zda sitove rozhrani potrebuje update front
+# Cil: Vrati 0, pokud virtio rozhrani nema cilovy pocet front, jinak 1.
 net_needs_update() {
     local net_config="$1"
     local target_queues="$2"
@@ -348,7 +378,7 @@ net_needs_update() {
     return 1
 }
 
-# Kontrola, zda agent retezec potrebuje update (porovnani celeho retezce)
+# Cil: Vrati 0, pokud se agent retezec lisi od baseline (porovnani celeho retezce), jinak 1.
 # Proxmox muze pri ulozeni zmenit poradi sub-options, proto se oba
 # retezce pred porovnanim seradi, aby bylo porovnani idempotentni.
 # Detekuje zmeny ve VSECH sub-options: enabled, fstrim_cloned_disks,
@@ -372,6 +402,7 @@ agent_needs_update() {
 # FUNKCE: UPDATE PARAMETRU
 # ===========================================
 
+# Cil: Vypise konfiguraci sitoveho rozhrani s nahrazenym parametrem queues.
 update_net_queues() {
     local net_config="$1"
     local target_queues="$2"
@@ -389,6 +420,10 @@ update_net_queues() {
 # FUNKCE: ZPRACOVANI VM
 # ===========================================
 
+# Cil: Porovna baseline parametry VM s politikou a opravi drift pres qm set.
+# Mantinely: Vyloucene VM a ostype mimo linux/windows preskoci; v dry-run jen hlasi; pred prvni zmenou zalohuje
+#            konfiguraci; zmena machine vyzaduje poweroff/poweron, VM se jen zaradi do seznamu, nerestartuje se.
+# Kontrola: Navratovy kod qm set kazde zmeny; citace CHANGES_MADE/ERRORS/SKIPPED a zpravy v JSON vystupu.
 process_vm() {
     local vmid="$1"
 
@@ -664,7 +699,8 @@ TARGET_VMIDS=$(echo "$TARGET_VMIDS" | xargs)
 
 # Kontrola konfiguracniho souboru
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo '{"changed": false, "reboot_required": false, "poweroff_vms": [], "changes": 0, "errors": 1, "skipped": 0, "msg": "Config file not found: '"$CONFIG_FILE"'"}'
+    echo '{"changed": false, "reboot_required": false, "poweroff_vms": [], "changes": 0,' \
+        '"errors": 1, "skipped": 0, "msg": "Config file not found: '"$CONFIG_FILE"'"}'
     exit 1
 fi
 

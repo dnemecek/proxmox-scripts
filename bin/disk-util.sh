@@ -1,7 +1,11 @@
 #!/bin/bash
-# ============================================================================
-# disk-util.sh - Vytizeni disku na node s prirazenim OSD a modelu
-# ============================================================================
+#
+# Soubor: disk-util.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Vytizeni disku na node s prirazenim OSD a modelu
+#
 # Pouziti:  ./disk-util.sh [SECONDS] [MIN_UTIL]
 #           ./disk-util.sh              (10 s, disky s vytizenim >= 5 %)
 #           ./disk-util.sh 30 0         (30 s, vsechny disky)
@@ -11,8 +15,6 @@
 #          Ceph OSD a model. Disk s vysokym %util pri malem poctu IOPS a
 #          dlouhym await je podezrely. Nevyzaduje sysstat. Jen cte.
 #
-# David Nemecek | 2026
-# ============================================================================
 
 set -euo pipefail
 
@@ -42,6 +44,7 @@ for blk in /var/lib/ceph/osd/ceph-*/block /var/lib/ceph/osd/ceph-*/block.db; do
     done
 done
 
+# Cil: Vypise vybrane citace z /proc/diskstats pro disky sd*, nvme* a vd*.
 # Pole /proc/diskstats: 4 reads, 6 sectors read, 7 ms reading,
 # 8 writes, 10 sectors written, 11 ms writing, 13 ms doing I/O
 snap() { awk '$3 ~ /^(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+)$/ {print $3,$4,$6,$7,$8,$10,$11,$13}' /proc/diskstats; }
@@ -51,7 +54,8 @@ sleep "$SECONDS_SAMPLE"
 after=$(snap)
 
 printf "%-9s %5s %7s %7s %7s %7s %8s  %-12s %s\n" dev util r/s rMB/s w/s wMB/s await_ms osd model
-join <(echo "$before" | sort) <(echo "$after" | sort) | while read -r dev r1 rs1 rt1 w1 ws1 wt1 io1 r2 rs2 rt2 w2 ws2 wt2 io2; do
+join <(echo "$before" | sort) <(echo "$after" | sort) |
+    while read -r dev r1 rs1 rt1 w1 ws1 wt1 io1 r2 rs2 rt2 w2 ws2 wt2 io2; do
     util=$(( (io2 - io1) / (SECONDS_SAMPLE * 10) ))
     (( util >= MIN_UTIL )) || continue
     ios=$(( (r2 - r1) + (w2 - w1) ))

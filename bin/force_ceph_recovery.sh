@@ -1,4 +1,11 @@
 #!/bin/bash
+#
+# Soubor: force_ceph_recovery.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Zapne force-recovery a force-backfill pro vsechny pooly krome .mgr a vypise stav clusteru
+#
 
 # Ziska seznam poolu a spusti force-recovery a force-backfill pro kazdy krome .mgr
 for pool in $(ceph osd pool ls); do

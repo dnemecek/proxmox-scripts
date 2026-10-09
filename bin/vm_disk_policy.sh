@@ -1,9 +1,16 @@
 #!/bin/bash
-# vm_disk_policy.sh
+#
+# Soubor: vm_disk_policy.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Ansible-ready skript pro nastaveni disk policy na VM discich
+#        (cache, iothread, aio, bandwidth, iops, discard, ssd, scsihw)
+#
 # Verze: 1.2.6
-# Popis: Ansible-ready skript pro nastaveni disk policy (cache, iothread, aio, bandwidth, iops, discard, ssd, scsihw) na VM discich
-#        Automaticky nastavi virtio-scsi-single controller pro VM s SCSI disky
-#        Identicky skript pro Ceph i ZFS clustery, per-cluster jen vm_disk_policy.conf
+#
+# Automaticky nastavi virtio-scsi-single controller pro VM s SCSI disky
+# Identicky skript pro Ceph i ZFS clustery, per-cluster jen vm_disk_policy.conf
 # Spousteni: rucne nebo cron, opravuje drift od pozadovane konfigurace
 # Umisteni: /root/bin/vm_disk_policy.sh
 # Pouziti: ./vm_disk_policy.sh [VMID...]
@@ -38,6 +45,9 @@ TARGET_VMIDS=""
 # ===========================================
 # KONTROLA ZAVISLOSTI
 # ===========================================
+# Cil: Overi dostupnost jq a qm; pri chybejici zavislosti vypise JSON chybu a ukonci skript.
+# Mantinely: Jen kontroluje PATH, nic nemeni.
+# Kontrola: Navratovy kod 1 a JSON s errors=1 pri chybejici zavislosti.
 check_dependencies() {
     local missing=()
     
@@ -50,7 +60,8 @@ check_dependencies() {
     fi
     
     if [ ${#missing[@]} -gt 0 ]; then
-        echo "{\"changed\": false, \"reboot_required\": false, \"poweroff_vms\": [], \"changes\": 0, \"errors\": 1, \"skipped\": 0, \"msg\": \"Missing dependencies: ${missing[*]}\"}"
+        echo "{\"changed\": false, \"reboot_required\": false, \"poweroff_vms\": [], \"changes\": 0," \
+            "\"errors\": 1, \"skipped\": 0, \"msg\": \"Missing dependencies: ${missing[*]}\"}"
         exit 1
     fi
 }
@@ -60,6 +71,7 @@ check_dependencies
 # ===========================================
 # FUNKCE: HELP
 # ===========================================
+# Cil: Vypise napovedu k pouziti skriptu a ukonci ho s kodem 0.
 show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS] [VMID...]
@@ -90,6 +102,7 @@ EOF
     exit 0
 }
 
+# Cil: Vypise verzi skriptu a ukonci ho s kodem 0.
 show_version() {
     echo "$SCRIPT_NAME version $SCRIPT_VERSION"
     exit 0
@@ -99,6 +112,7 @@ show_version() {
 # FUNKCE: LOGOVANI A VYSTUP
 # ===========================================
 
+# Cil: Zapise zpravu s urovni a casovou znackou do LOG_FILE.
 log() {
     local level="$1"
     local message="$2"
@@ -106,10 +120,12 @@ log() {
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
 }
 
+# Cil: Prida zpravu do souhrnu pro pole msg v JSON vystupu.
 add_message() {
     MESSAGES+=("$1")
 }
 
+# Cil: Prida VMID do seznamu VM vyzadujicich poweroff/poweron (bez duplicit).
 add_poweroff_vm() {
     local vmid="$1"
     # Pridat pouze pokud jeste neni v seznamu
@@ -118,6 +134,7 @@ add_poweroff_vm() {
     fi
 }
 
+# Cil: Vypise na stdout jednoradkovy JSON vysledek pro Ansible.
 output_json() {
     local msg=$(printf '%s; ' "${MESSAGES[@]}" | sed 's/; $//')
     [ -z "$msg" ] && msg="No changes required"
@@ -137,11 +154,15 @@ EOF
 # FUNKCE: CLUSTER OPERACE
 # ===========================================
 
+# Cil: Vypise nazev nodu, na kterem VM bezi, podle /etc/pve/.vmlist.
 get_vm_node() {
     local vmid="$1"
     jq -r ".ids.\"$vmid\".node // empty" /etc/pve/.vmlist
 }
 
+# Cil: Vypise nazev VM z qm config, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Jen cte; SSH jen v BatchMode s timeoutem 5 s.
+# Kontrola: Prazdny vystup = nazev nezjisten; volajici pouzije unknown.
 get_vm_name() {
     local vmid="$1"
     local vm_node="$2"
@@ -149,10 +170,14 @@ get_vm_name() {
     if [ "$vm_node" == "$CURRENT_NODE" ]; then
         qm config "$vmid" 2>/dev/null | grep "^name:" | cut -d' ' -f2
     else
-        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "root@$vm_node" "qm config $vmid" 2>/dev/null | grep "^name:" | cut -d' ' -f2
+        ssh -n -o BatchMode=yes -o ConnectTimeout=5 "root@$vm_node" "qm config $vmid" 2>/dev/null |
+            grep "^name:" | cut -d' ' -f2
     fi
 }
 
+# Cil: Vypise konfiguraci VM z qm config, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Jen cte; SSH jen v BatchMode s timeoutem 5 s.
+# Kontrola: Prazdny vystup = konfiguraci nelze ziskat; volajici to zaloguje.
 get_vm_config() {
     local vmid="$1"
     local vm_node="$2"
@@ -164,6 +189,9 @@ get_vm_config() {
     fi
 }
 
+# Cil: Zapise novou konfiguraci disku VM pres qm set, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Vstupy: VMID, nazev disku, cela konfigurace disku; SSH jen v BatchMode.
+# Kontrola: Navratovy kod qm set; 1 a ERROR v logu, pokud nelze zjistit node.
 run_qm_set() {
     local vmid="$1"
     local disk="$2"
@@ -186,11 +214,13 @@ run_qm_set() {
 # FUNKCE: KONFIGURACE
 # ===========================================
 
+# Cil: Vrati 0, pokud je VMID v seznamu EXCLUDED_VMIDS, jinak 1.
 is_excluded() {
     local vmid="$1"
     echo ",$EXCLUDED_VMIDS," | grep -q ",$vmid,"
 }
 
+# Cil: Vypise typ storage z configu (STORAGE_MAP_<storage>), nebo UNKNOWN.
 get_storage_type() {
     local storage="$1"
     # Nahradit pomlcky podtrzitky pro bash promennou
@@ -199,6 +229,7 @@ get_storage_type() {
     echo "${!var_name:-UNKNOWN}"
 }
 
+# Cil: Vypise hodnotu politiky z configu (<TYP>_<PARAMETR>) pro dany typ storage.
 get_policy_value() {
     local storage_type="$1"
     local param="$2"
@@ -206,7 +237,7 @@ get_policy_value() {
     echo "${!var_name:-}"
 }
 
-# Kontrola zda disk typ podporuje iothread (pouze virtio a scsi)
+# Cil: Vrati 0, pokud typ disku podporuje iothread (jen virtio a scsi), jinak 1.
 supports_iothread() {
     local disk="$1"
     if [[ "$disk" =~ ^(virtio|scsi)[0-9]+$ ]]; then
@@ -215,7 +246,7 @@ supports_iothread() {
     return 1
 }
 
-# Kontrola zda disk typ podporuje ssd emulation (pouze scsi)
+# Cil: Vrati 0, pokud typ disku podporuje ssd emulation (jen scsi), jinak 1.
 supports_ssd_emulation() {
     local disk="$1"
     if [[ "$disk" =~ ^scsi[0-9]+$ ]]; then
@@ -228,6 +259,9 @@ supports_ssd_emulation() {
 # FUNKCE: BACKUP
 # ===========================================
 
+# Cil: Zkopiruje konfiguraci VM z /etc/pve do BACKUP_DIR s casovou znackou v nazvu.
+# Mantinely: Puvodni konfiguraci nemeni; predpoklada pristup k /etc/pve (bezi na nodu clusteru).
+# Kontrola: Navratovy kod 1 a WARN v logu, pokud konfigurace neexistuje; cesta zalohy se zaloguje.
 backup_vm_config() {
     local vmid="$1"
     local vm_node="$2"
@@ -251,19 +285,23 @@ backup_vm_config() {
 # FUNKCE: PARSOVANI DISKU
 # ===========================================
 
+# Cil: Vypise hodnotu parametru z retezce konfigurace disku (prazdne, pokud chybi).
 get_disk_param() {
     local disk_config="$1"
     local param="$2"
-    # Vytahne hodnotu parametru z retezce konfigurace disku
     echo "$disk_config" | grep -oP "${param}=\K[^,]+" || echo ""
 }
 
+# Cil: Vypise ciselnou hodnotu parametru z retezce konfigurace disku (prazdne, pokud chybi).
 get_current_disk_value() {
     local disk_config="$1"
     local param="$2"
     echo "$disk_config" | grep -oP "${param}=\K[0-9.]+" || echo ""
 }
 
+# Cil: Vypise novou konfiguraci disku: odstrani spravovane parametry a prida cilove hodnoty z politiky.
+# Mantinely: Hodnota default se neprida (= vychozi Proxmox); iothread jen pro virtio/scsi,
+#            ssd jen pro scsi; nic nezapisuje.
 build_new_disk_config() {
     local disk_config="$1"
     local storage_type="$2"
@@ -303,35 +341,49 @@ build_new_disk_config() {
         -e 's/,iops_wr_max=[0-9.]+//g')
 
     # Pridani novych parametru (pouze pokud neni "default")
-    [ -n "$target_cache" ] && [ "$target_cache" != "default" ] && new_config="${new_config},cache=${target_cache}"
+    [ -n "$target_cache" ] && [ "$target_cache" != "default" ] &&
+        new_config="${new_config},cache=${target_cache}"
 
     # iothread pouze pro virtio a scsi
     if supports_iothread "$disk"; then
-        [ -n "$target_iothread" ] && [ "$target_iothread" != "default" ] && new_config="${new_config},iothread=${target_iothread}"
+        [ -n "$target_iothread" ] && [ "$target_iothread" != "default" ] &&
+            new_config="${new_config},iothread=${target_iothread}"
     fi
 
-    [ -n "$target_aio" ] && [ "$target_aio" != "default" ] && new_config="${new_config},aio=${target_aio}"
+    [ -n "$target_aio" ] && [ "$target_aio" != "default" ] &&
+        new_config="${new_config},aio=${target_aio}"
 
     # discard pro vsechny typy disku
-    [ -n "$target_discard" ] && [ "$target_discard" != "default" ] && new_config="${new_config},discard=${target_discard}"
+    [ -n "$target_discard" ] && [ "$target_discard" != "default" ] &&
+        new_config="${new_config},discard=${target_discard}"
 
     # ssd emulation pouze pro scsi
     if supports_ssd_emulation "$disk"; then
-        [ -n "$target_ssd" ] && [ "$target_ssd" != "default" ] && [ "$target_ssd" != "0" ] && new_config="${new_config},ssd=${target_ssd}"
+        [ -n "$target_ssd" ] && [ "$target_ssd" != "default" ] && [ "$target_ssd" != "0" ] &&
+            new_config="${new_config},ssd=${target_ssd}"
     fi
 
-    [ -n "$target_rd" ] && [ "$target_rd" != "default" ] && new_config="${new_config},mbps_rd=${target_rd}"
-    [ -n "$target_wr" ] && [ "$target_wr" != "default" ] && new_config="${new_config},mbps_wr=${target_wr}"
-    [ -n "$target_rd_max" ] && [ "$target_rd_max" != "default" ] && new_config="${new_config},mbps_rd_max=${target_rd_max}"
-    [ -n "$target_wr_max" ] && [ "$target_wr_max" != "default" ] && new_config="${new_config},mbps_wr_max=${target_wr_max}"
-    [ -n "$target_iops_rd" ] && [ "$target_iops_rd" != "default" ] && new_config="${new_config},iops_rd=${target_iops_rd}"
-    [ -n "$target_iops_wr" ] && [ "$target_iops_wr" != "default" ] && new_config="${new_config},iops_wr=${target_iops_wr}"
-    [ -n "$target_iops_rd_max" ] && [ "$target_iops_rd_max" != "default" ] && new_config="${new_config},iops_rd_max=${target_iops_rd_max}"
-    [ -n "$target_iops_wr_max" ] && [ "$target_iops_wr_max" != "default" ] && new_config="${new_config},iops_wr_max=${target_iops_wr_max}"
+    [ -n "$target_rd" ] && [ "$target_rd" != "default" ] &&
+        new_config="${new_config},mbps_rd=${target_rd}"
+    [ -n "$target_wr" ] && [ "$target_wr" != "default" ] &&
+        new_config="${new_config},mbps_wr=${target_wr}"
+    [ -n "$target_rd_max" ] && [ "$target_rd_max" != "default" ] &&
+        new_config="${new_config},mbps_rd_max=${target_rd_max}"
+    [ -n "$target_wr_max" ] && [ "$target_wr_max" != "default" ] &&
+        new_config="${new_config},mbps_wr_max=${target_wr_max}"
+    [ -n "$target_iops_rd" ] && [ "$target_iops_rd" != "default" ] &&
+        new_config="${new_config},iops_rd=${target_iops_rd}"
+    [ -n "$target_iops_wr" ] && [ "$target_iops_wr" != "default" ] &&
+        new_config="${new_config},iops_wr=${target_iops_wr}"
+    [ -n "$target_iops_rd_max" ] && [ "$target_iops_rd_max" != "default" ] &&
+        new_config="${new_config},iops_rd_max=${target_iops_rd_max}"
+    [ -n "$target_iops_wr_max" ] && [ "$target_iops_wr_max" != "default" ] &&
+        new_config="${new_config},iops_wr_max=${target_iops_wr_max}"
 
     echo "$new_config"
 }
 
+# Cil: Vrati 0, pokud se nektery spravovany parametr disku lisi od politiky, jinak 1.
 needs_update() {
     local disk_config="$1"
     local storage_type="$2"
@@ -458,6 +510,7 @@ needs_update() {
     return 1
 }
 
+# Cil: Vypise seznam odchylek disku od politiky ve formatu parametr:aktualni>cilova.
 get_drift_details() {
     local disk_config="$1"
     local storage_type="$2"
@@ -506,7 +559,8 @@ get_drift_details() {
         if [ "$target_iothread" == "default" ]; then
             [ -n "$current_iothread" ] && drifts+=("iothread:${current_iothread}->default")
         else
-            [ "$current_iothread" != "$target_iothread" ] && drifts+=("iothread:${current_iothread:-0}>${target_iothread}")
+            [ "$current_iothread" != "$target_iothread" ] &&
+                drifts+=("iothread:${current_iothread:-0}>${target_iothread}")
         fi
     fi
 
@@ -571,18 +625,21 @@ get_drift_details() {
     if [ "$target_iops_rd_max" == "default" ]; then
         [ -n "$current_iops_rd_max" ] && drifts+=("iops_rd_max:${current_iops_rd_max}->default")
     else
-        [ "$current_iops_rd_max" != "$target_iops_rd_max" ] && drifts+=("iops_rd_max:${current_iops_rd_max:-0}>${target_iops_rd_max}")
+        [ "$current_iops_rd_max" != "$target_iops_rd_max" ] &&
+            drifts+=("iops_rd_max:${current_iops_rd_max:-0}>${target_iops_rd_max}")
     fi
 
     if [ "$target_iops_wr_max" == "default" ]; then
         [ -n "$current_iops_wr_max" ] && drifts+=("iops_wr_max:${current_iops_wr_max}->default")
     else
-        [ "$current_iops_wr_max" != "$target_iops_wr_max" ] && drifts+=("iops_wr_max:${current_iops_wr_max:-0}>${target_iops_wr_max}")
+        [ "$current_iops_wr_max" != "$target_iops_wr_max" ] &&
+            drifts+=("iops_wr_max:${current_iops_wr_max:-0}>${target_iops_wr_max}")
     fi
 
     echo "${drifts[*]}"
 }
 
+# Cil: Vrati 0, pokud se meni cache disku (zmena vyzaduje poweroff/poweron), jinak 1.
 cache_changed() {
     local disk_config="$1"
     local storage_type="$2"
@@ -604,16 +661,22 @@ cache_changed() {
 # FUNKCE: SCSI CONTROLLER
 # ===========================================
 
+# Cil: Vypise typ SCSI controlleru (scsihw) z konfigurace VM.
 get_scsihw() {
     local vm_config="$1"
     echo "$vm_config" | grep "^scsihw:" | cut -d' ' -f2
 }
 
+# Cil: Vrati 0, pokud ma VM aspon jeden SCSI disk, jinak 1.
 has_scsi_disks() {
     local vm_config="$1"
     echo "$vm_config" | grep -qE "^scsi[0-9]+:"
 }
 
+# Cil: Nastavi controller virtio-scsi-single u VM se SCSI disky, pokud ho jeste nema.
+# Mantinely: VM bez SCSI disku nemeni; v dry-run jen hlasi; pred zmenou jednou zalohuje konfiguraci;
+#            VM nerestartuje, jen ji zaradi do poweroff seznamu.
+# Kontrola: Navratovy kod qm set; vysledek v logu, citacich a JSON vystupu.
 ensure_virtio_scsi_single() {
     local vmid="$1"
     local vm_name="$2"
@@ -634,7 +697,8 @@ ensure_virtio_scsi_single() {
     fi
     
     # Potrebujeme zmenit na virtio-scsi-single
-    log "WARN" "VM $vmid ($vm_name): scsihw=${current_scsihw:-lsi} needs change to virtio-scsi-single (poweroff required)"
+    log "WARN" \
+        "VM $vmid ($vm_name): scsihw=${current_scsihw:-lsi} needs change to virtio-scsi-single (poweroff required)"
     
     if [ "$DRY_RUN" == "true" ]; then
         log "INFO" "VM $vmid ($vm_name): DRY_RUN - would set scsihw=virtio-scsi-single"
@@ -665,6 +729,9 @@ ensure_virtio_scsi_single() {
     fi
 }
 
+# Cil: Nastavi jeden parametr VM pres qm set, lokalne nebo pres SSH na nodu VM.
+# Mantinely: Vstupy: VMID, nazev parametru, hodnota bez mezer (vzdalene se neuzavira do uvozovek); SSH jen v BatchMode.
+# Kontrola: Navratovy kod qm set; 1 a ERROR v logu, pokud nelze zjistit node.
 run_qm_set_simple() {
     local vmid="$1"
     local param="$2"
@@ -687,6 +754,10 @@ run_qm_set_simple() {
 # FUNKCE: ZPRACOVANI DISKU
 # ===========================================
 
+# Cil: Porovna disk VM s politikou jeho storage a pri driftu nastavi novou konfiguraci pres qm set.
+# Mantinely: Preskoci CD-ROM, cloudinit, none a storage mimo STORAGE_MAP; v dry-run jen hlasi; pred prvni zmenou VM
+#            zalohuje konfiguraci; zmena cache vyzaduje poweroff/poweron, VM se nerestartuje.
+# Kontrola: Navratovy kod qm set; vysledek v logu, citacich a JSON vystupu.
 process_disk() {
     local vmid="$1"
     local vm_name="$2"
@@ -723,7 +794,8 @@ process_disk() {
         cache_requires_poweroff=true
         local current_cache=$(get_disk_param "$disk_config" "cache")
         local target_cache=$(get_policy_value "$storage_type" "CACHE")
-        log "WARN" "VM $vmid ($vm_name) $disk: cache changed (${current_cache:-default}->${target_cache}), poweroff/poweron required to apply"
+        local cache_msg="VM $vmid ($vm_name) $disk: cache changed (${current_cache:-default}->${target_cache})"
+        log "WARN" "${cache_msg}, poweroff/poweron required to apply"
     fi
     
     # Sestaveni nove konfigurace
@@ -762,6 +834,9 @@ process_disk() {
 # FUNKCE: ZPRACOVANI VM
 # ===========================================
 
+# Cil: Zpracuje jednu VM: zajisti virtio-scsi-single a projde vsechny disky virtio/scsi/ide/sata.
+# Mantinely: Vyloucene VM preskoci; konfiguraci cte pres qm config (bez snapshotu).
+# Kontrola: Navratovy kod 1 pri nenalezene VM nebo konfiguraci; vysledky disku viz process_disk.
 process_vm() {
     local vmid="$1"
     
@@ -842,7 +917,8 @@ TARGET_VMIDS=$(echo "$TARGET_VMIDS" | xargs)
 
 # Kontrola konfiguracniho souboru
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo '{"changed": false, "reboot_required": false, "poweroff_vms": [], "changes": 0, "errors": 1, "skipped": 0, "msg": "Config file not found: '"$CONFIG_FILE"'"}'
+    echo '{"changed": false, "reboot_required": false, "poweroff_vms": [], "changes": 0,' \
+        '"errors": 1, "skipped": 0, "msg": "Config file not found: '"$CONFIG_FILE"'"}'
     exit 1
 fi
 

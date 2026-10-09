@@ -1,8 +1,12 @@
 #!/bin/bash
 #
-# scrub_schedule.sh - Casova politika pro Ceph scrub a recovery
-# Verze: 2.1.0
-# Datum: 2026-10-09
+# Soubor: scrub_schedule.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Casova politika pro Ceph scrub a recovery
+#
+# Verze: 2.1.0 (2026-10-09)
 #
 # Cil: V produkcnich hodinach minimalizovat dopad scrub/recovery na VM workload.
 #      Off-hours a vikend = catch-up.
@@ -56,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --help|-h)
-            sed -n '2,25p' "$0" | sed 's/^# \?//'
+            sed -n '2,29p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *)
@@ -83,6 +87,7 @@ fi
 mkdir -p "${LOG_DIR}"
 touch "${LOG_FILE}"
 
+# Cil: Zapise zpravu s urovni a casovou znackou na stdout a do LOG_FILE.
 log() {
     local ts level msg
     ts=$(date '+%Y-%m-%d %H:%M:%S')
@@ -90,6 +95,7 @@ log() {
     msg="$*"
     printf '[%s] [%s] %s\n' "${ts}" "${level}" "${msg}" | tee -a "${LOG_FILE}"
 }
+# Cil: Zkratky pro log podle urovne (log_error vypisuje na stderr).
 log_info()  { log "INFO"  "$@"; }
 log_warn()  { log "WARN"  "$@"; }
 log_error() { log "ERROR" "$@" >&2; }
@@ -144,6 +150,9 @@ if [[ "${mclock_override_recovery_settings}" != "true" && "${mclock_override_rec
 fi
 
 # === Ceph wrapper s osetrenim chyb ===
+# Cil: Nastavi parametr OSD pres ceph config set a zpetnym ctenim overi, ze plati.
+# Mantinely: V dry-run jen loguje; meni jen sekci osd; odlisnou platnou hodnotu neopravuje, jen hlasi.
+# Kontrola: Navratovy kod ceph config set (1 = chyba) a porovnani s ceph config get (rozdil = WARN v logu).
 ceph_set() {
     local key="$1" value="$2"
     if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -166,13 +175,16 @@ ceph_set() {
     fi
 }
 
-# Limity recovery/backfill. Pod mClockem jen s override (viz hlavicka), jinak
-# by se nastaveni tvarilo jako provedene a nemelo by ucinek.
+# Cil: Nastavi osd_max_backfills a osd_recovery_max_active_hdd/ssd, pod mClockem vcetne override.
+# Mantinely: Pod mClockem bez mclock_override_recovery_settings=true limity nenastavuje a override vypne
+#            (viz hlavicka); jinak by se nastaveni tvarilo jako provedene a nemelo by ucinek.
+# Kontrola: ceph_set overi kazdou hodnotu zpetnym ctenim.
 apply_recovery_limits() {
     local using_mclock="$1" backfills="$2" max_hdd="$3" max_ssd="$4"
     if [[ "${using_mclock}" -eq 1 ]]; then
         if [[ "${mclock_override_recovery_settings}" != "true" ]]; then
-            log_warn "   mClock without override: max_backfills and recovery_max_active are controlled by mClock (mclock_override_recovery_settings=false)"
+            local note="   mClock without override: max_backfills and recovery_max_active are controlled by mClock"
+            log_warn "${note} (mclock_override_recovery_settings=false)"
             ceph_set osd_mclock_override_recovery_settings false
             return 0
         fi
@@ -184,6 +196,9 @@ apply_recovery_limits() {
 }
 
 # === Detekce mClock scheduleru ===
+# Cil: Vrati 0, pokud OSD pouzivaji mClock scheduler (osd_op_queue = mclock_scheduler).
+# Mantinely: Jen cte; nedostupny ceph = navratovy kod 1 (vetev WPQ).
+# Kontrola: Navratovy kod; volajici zaloguje detekovany scheduler.
 ceph_uses_mclock() {
     local sched
     sched=$(ceph config get osd osd_op_queue 2>/dev/null || echo "")
@@ -195,6 +210,7 @@ ceph_uses_mclock() {
 day_of_week=$((10#$(date +%u)))      # 1=Po..7=Ne
 current_hour=$((10#$(date +%H)))     # 0..23
 
+# Cil: Vrati 0, pokud je pracovni den a aktualni hodina je v produkcnim okne z configu.
 is_production_window() {
     [[ "${day_of_week}" -le 5 ]] || return 1
     [[ "${current_hour}" -ge "${production_start_time}" ]] || return 1
@@ -203,6 +219,9 @@ is_production_window() {
 }
 
 # === Aplikace politiky ===
+# Cil: Aplikuje produkcni politiku: omezi scrub a recovery ve prospech VM workloadu.
+# Mantinely: Hodnoty bere jen z configu; parametry priority nastavuje jen pod WPQ (mClock je ignoruje).
+# Kontrola: ceph_set overi kazdou hodnotu; vysledne hodnoty se zapisi do logu.
 apply_production_policy() {
     log_info "=> Applying PRODUCTION policy (priority: VM workload)"
 
@@ -234,12 +253,18 @@ apply_production_policy() {
     fi
 
     log_info "   Values:  max_scrubs=${scrubs_in_production}, max_backfills=${production_max_backfills}"
-    log_info "            recovery_max_hdd=${production_recovery_max_active_hdd}, recovery_max_ssd=${production_recovery_max_active_ssd}"
-    log_info "            scrub_sleep=${scrub_sleep_production}s, scrub_load_threshold=${production_scrub_load_threshold}"
+    local line
+    line="            recovery_max_hdd=${production_recovery_max_active_hdd}"
+    log_info "${line}, recovery_max_ssd=${production_recovery_max_active_ssd}"
+    line="            scrub_sleep=${scrub_sleep_production}s"
+    log_info "${line}, scrub_load_threshold=${production_scrub_load_threshold}"
     log_info "            scrub_during_recovery=${production_scrub_during_recovery}"
     log_info "            deep_scrub_interval=$(( deep_scrub_interval_production / 86400 )) days"
 }
 
+# Cil: Aplikuje off-hours politiku: povoli vic scrub a recovery pro dohnani zpozdeni (catch-up).
+# Mantinely: Hodnoty bere jen z configu; parametry priority nastavuje jen pod WPQ (mClock je ignoruje).
+# Kontrola: ceph_set overi kazdou hodnotu; vysledne hodnoty se zapisi do logu.
 apply_off_hours_policy() {
     log_info "=> Applying OFF-HOURS policy (catch-up scrub and recovery)"
 
@@ -269,7 +294,9 @@ apply_off_hours_policy() {
     fi
 
     log_info "   Values:  max_scrubs=${scrubs_off_hours}, max_backfills=${off_hours_max_backfills}"
-    log_info "            recovery_max_hdd=${off_hours_recovery_max_active_hdd}, recovery_max_ssd=${off_hours_recovery_max_active_ssd}"
+    local line
+    line="            recovery_max_hdd=${off_hours_recovery_max_active_hdd}"
+    log_info "${line}, recovery_max_ssd=${off_hours_recovery_max_active_ssd}"
     log_info "            scrub_sleep=${scrub_sleep_off_hours}s, scrub_load_threshold=${off_hours_scrub_load_threshold}"
     log_info "            scrub_during_recovery=${off_hours_scrub_during_recovery}"
     log_info "            deep_scrub_interval=$(( deep_scrub_interval_off_hours / 86400 )) days"

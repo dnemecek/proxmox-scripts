@@ -1,4 +1,12 @@
 #!/bin/bash
+#
+# Soubor: repair_inconsistent_pgs.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Kontrola problematickych PG: repair pro inconsistent, force-recovery
+#        pro dlouho unfound, ostatni stavy jen loguje
+#
 
 # Nastaveni logovani
 exec 1> >(logger -s -t $(basename $0)) 2>&1
@@ -8,7 +16,7 @@ MAX_FORCE_RECOVERIES=20  # Maximalni pocet soubeznych force-recovery operaci
 FORCE_AGE_DAYS=5        # Spustit force po X dnech bezici opravy
 LOG_FILE="/var/log/ceph/pg_repair.log"
 
-# Funkce pro logovani
+# Cil: Zapise zpravu s casovou znackou na stdout a do LOG_FILE.
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $1" | tee -a $LOG_FILE
@@ -20,7 +28,9 @@ if [ ! -d "/var/log/ceph" ]; then
 fi
 touch $LOG_FILE
 
-# Funkce pro zjisteni stari problemu
+# Cil: Vypise pocet dni od posledni zmeny PG (last_change z ceph pg query), pri chybejicim udaji 0.
+# Mantinely: Vstup je ID PG; jen cte; vyzaduje GNU date -d.
+# Kontrola: Vystup je cele cislo; hlavni beh ho porovna s FORCE_AGE_DAYS.
 get_problem_age() {
     local pg=$1
     local last_change=$(ceph pg $pg query | grep last_change | head -1 | awk -F'"' '{print $4}')
@@ -38,7 +48,9 @@ get_problem_age() {
 log "=== Problematic PG check started ==="
 
 # Ziskat seznam vsech problematickych PG
-problematic_pgs=$(ceph health detail | grep -E "pg [0-9]+\.[0-9a-f]+" | grep -E 'inconsistent|unfound|degraded|down|incomplete|stale|peering|recovering|undersized|backfilling|backfill_toofull|backfill_wait|remapped' | awk '{print $2}' | sort -u)
+problematic_pgs=$(ceph health detail | grep -E "pg [0-9]+\.[0-9a-f]+" |
+    grep -E 'inconsistent|unfound|degraded|down|incomplete|stale|peering|recovering|undersized|backfilling|backfill_toofull|backfill_wait|remapped' |
+    awk '{print $2}' | sort -u)
 
 if [ -z "$problematic_pgs" ]; then
     log "No problematic PGs found."

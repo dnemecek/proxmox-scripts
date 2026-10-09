@@ -1,7 +1,12 @@
 #!/bin/bash
-# ceph_pg_diagnosis.sh
-# verze 2.0.0
-# Minimalisticky diagnosticky skript pro Ceph PG
+#
+# Soubor: ceph_pg_diagnosis.sh
+# Projekt: proxmox-scripts
+# Autor: David Nemecek
+# Datum: 2026-10-08
+# Popis: Minimalisticky diagnosticky skript pro Ceph PG
+#
+# Verze: 2.0.0
 
 set -euo pipefail
 
@@ -11,7 +16,7 @@ LOG_FILE="${SCRIPT_NAME}.log"
 PG_ID="${1:-}"
 OUTPUT_FORMAT="${2:-human}"  # human|json
 
-# Jednoduche logovani
+# Cil: Zapise zpravu s casovou znackou do LOG_FILE, v rezimu human i na stdout.
 log() {
     if [[ "$OUTPUT_FORMAT" != "json" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -64,7 +69,7 @@ ceph pg $PG_ID query 2>/dev/null | grep -E "(state_name|acting|up)" | head -5 | 
 done
 
 # OSD logy pro acting OSD
-log "--- OSD logs (last errors) ---"
+log "--- OSD logs (last 3 errors) ---"
 ACTING_OSDS=$(echo "$PG_HEALTH" | grep -oE 'acting \[[0-9,]+\]' | grep -oE '[0-9,]+' | tr ',' ' ')
 
 for osd in $ACTING_OSDS; do
@@ -78,7 +83,8 @@ for osd in $ACTING_OSDS; do
             # OSD je na jinem serveru - pouzij SSH
             log "  (OSD.$osd is on host $osd_host)"
             ssh -o ConnectTimeout=5 -o BatchMode=yes root@"$osd_host" \
-                "grep -i '$PG_ID' /var/log/ceph/ceph-osd.$osd.log 2>/dev/null | grep -iE '(error|inconsistent|corrupt)' | tail -3" 2>/dev/null | \
+                "grep -i '$PG_ID' /var/log/ceph/ceph-osd.$osd.log 2>/dev/null \
+                | grep -iE '(error|inconsistent|corrupt)' | tail -3" 2>/dev/null | \
             while read -r error; do
                 if [[ -n "$error" ]]; then
                     log "  $error"
@@ -127,7 +133,8 @@ log "Log saved to: $(pwd)/$LOG_FILE"
 # JSON vystup pro Ansible
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     # Extrakce acting OSD
-    ACTING_OSDS_JSON=$(echo "$PG_HEALTH" | grep -oE 'acting \[[0-9,]+\]' | grep -oE '[0-9,]+' | sed 's/,/","/g; s/^/"/; s/$/"/')
+    ACTING_OSDS_JSON=$(echo "$PG_HEALTH" | grep -oE 'acting \[[0-9,]+\]' | grep -oE '[0-9,]+' |
+        sed 's/,/","/g; s/^/"/; s/$/"/')
     
     # Urceni stavu a doporuceni
     REQUIRES_REPAIR="false"
