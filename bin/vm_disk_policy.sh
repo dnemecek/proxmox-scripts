@@ -24,7 +24,7 @@ DEFAULT_LOG_FILE="/var/log/pve/vm_disk_policy.log"
 DEFAULT_BACKUP_DIR="/var/backups/vm_disk_policy"
 CURRENT_NODE=$(hostname)
 
-# Ansible output promenne
+# Promenne pro Ansible vystup
 CHANGED=false
 CHANGES_MADE=0
 ERRORS=0
@@ -96,7 +96,7 @@ show_version() {
 }
 
 # ===========================================
-# FUNKCE: LOGOVANI A OUTPUT
+# FUNKCE: LOGOVANI A VYSTUP
 # ===========================================
 
 log() {
@@ -254,7 +254,7 @@ backup_vm_config() {
 get_disk_param() {
     local disk_config="$1"
     local param="$2"
-    # Extrahuje hodnotu parametru z disk config stringu
+    # Vytahne hodnotu parametru z retezce konfigurace disku
     echo "$disk_config" | grep -oP "${param}=\K[^,]+" || echo ""
 }
 
@@ -286,7 +286,7 @@ build_new_disk_config() {
 
     # Odstraneni starych parametru ktere budeme nastavovat
     # Vzdy odstranime, pokud je target=default, nepridame zpet (= Proxmox default)
-    # POZN: regex `mbps_rd=[0-9.]+` neziabkne `mbps_rd_max=` (za = musi byt digit, ne `_`)
+    # POZN: regex `mbps_rd=[0-9.]+` nezachyti `mbps_rd_max=` (za = musi byt digit, ne `_`)
     local new_config=$(echo "$disk_config" | sed -E \
         -e 's/,cache=[^,]+//g' \
         -e 's/,iothread=[^,]+//g' \
@@ -765,7 +765,7 @@ process_disk() {
 process_vm() {
     local vmid="$1"
     
-    # Kontrola excluded
+    # Kontrola vyloucenych VM
     if is_excluded "$vmid"; then
         log "INFO" "VM $vmid: Excluded (in EXCLUDED_VMIDS), skipping"
         add_message "VM $vmid: SKIPPED (excluded)"
@@ -837,7 +837,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# Trim leading space
+# Oriznuti uvodni mezery
 TARGET_VMIDS=$(echo "$TARGET_VMIDS" | xargs)
 
 # Kontrola konfiguracniho souboru
@@ -849,7 +849,7 @@ fi
 # Nacteni konfigurace
 source "$CONFIG_FILE"
 
-# Nastaveni defaultu
+# Nastaveni vychozich hodnot
 LOG_FILE="${LOG_FILE:-$DEFAULT_LOG_FILE}"
 BACKUP_DIR="${BACKUP_DIR:-$DEFAULT_BACKUP_DIR}"
 DRY_RUN="${DRY_RUN:-true}"
@@ -859,7 +859,7 @@ EXCLUDED_VMIDS="${EXCLUDED_VMIDS:-}"
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$BACKUP_DIR"
 
-# Cleanup backup_done flags z predchoziho behu
+# Uklid priznaku backup_done z predchoziho behu
 rm -f "${BACKUP_DIR}"/*_backup_done 2>/dev/null
 
 log "INFO" "=== Starting $SCRIPT_NAME v$SCRIPT_VERSION ==="
@@ -888,17 +888,17 @@ for vmid in $vmids; do
     process_vm "$vmid"
 done
 
-# Cleanup backup_done flags
+# Uklid priznaku backup_done
 rm -f "${BACKUP_DIR}"/*_backup_done 2>/dev/null
 
-# Log poweroff warning summary
+# Souhrnne varovani o poweroff do logu
 if [ ${#POWEROFF_VMIDS[@]} -gt 0 ]; then
     log "WARN" "=== VMs requiring poweroff/poweron: ${POWEROFF_VMIDS[*]} ==="
 fi
 
 log "INFO" "=== Finished: $CHANGES_MADE changes, $ERRORS errors, $SKIPPED skipped ==="
 
-# Ansible JSON output na stdout
+# Ansible JSON vystup na stdout
 output_json
 
 exit 0

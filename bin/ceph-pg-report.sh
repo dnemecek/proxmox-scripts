@@ -1,13 +1,13 @@
 #!/bin/bash
-# ceph-pg-report.sh - Identify VMs affected by Ceph PG problems
-# Author: David Nemecek | December 2025
+# ceph-pg-report.sh - Identifikace VM zasazenych problemy Ceph PG
+# Autor: David Nemecek | prosinec 2025
 
 echo "=== CEPH PG Health Report ==="
 echo "Cluster: $(pvesh get /cluster/status --output-format json | jq -r '.[] | select(.type=="cluster") | .name')"
 echo "Generated: $(date '+%Y-%m-%d %H:%M')"
 echo ""
 
-# Get problematic PGs
+# Ziskani problematickych PG
 PROBLEM_PGS=$(ceph health detail 2>/dev/null | grep "^    pg " | awk '{print $2}')
 
 if [ -z "$PROBLEM_PGS" ]; then
@@ -15,7 +15,7 @@ if [ -z "$PROBLEM_PGS" ]; then
     exit 0
 fi
 
-# Get pool ID to name mapping
+# Mapovani ID poolu na nazev
 declare -A POOL_NAMES
 while read -r line; do
     id=$(echo "$line" | awk '{print $1}')
@@ -23,7 +23,7 @@ while read -r line; do
     POOL_NAMES[$id]=$name
 done < <(ceph osd pool ls detail 2>/dev/null | grep "^pool" | awk '{print $2, $3}' | tr -d "'")
 
-# Get RBD image ID to name mapping per pool
+# Mapovani ID RBD image na nazev pro kazdy pool
 declare -A IMAGE_MAP
 for pool in "${POOL_NAMES[@]}"; do
     while read -r img; do
@@ -33,19 +33,19 @@ for pool in "${POOL_NAMES[@]}"; do
     done < <(rbd ls "$pool" 2>/dev/null)
 done
 
-# Build VM status cache from cluster resources
+# Sestaveni cache stavu VM z cluster resources
 declare -A VM_STATUS_CACHE
 while IFS='|' read -r vmid status; do
     [ -n "$vmid" ] && VM_STATUS_CACHE[$vmid]=$status
 done < <(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null | jq -r '.[] | "\(.vmid)|\(.status)"')
 
-# Function to get VM name and status from cluster config
+# Funkce pro zjisteni nazvu, stavu a nodu VM z konfigurace clusteru
 get_vm_info() {
     local vmid=$1
     local vm_name=""
     local vm_node=""
     
-    # Search config in all nodes
+    # Hledani konfigurace na vsech nodech
     for conf in /etc/pve/nodes/*/qemu-server/${vmid}.conf; do
         if [ -f "$conf" ]; then
             vm_name=$(grep "^name:" "$conf" 2>/dev/null | cut -d' ' -f2)
@@ -54,7 +54,7 @@ get_vm_info() {
         fi
     done
     
-    # Get status from cache
+    # Stav VM z cache
     vm_status=${VM_STATUS_CACHE[$vmid]:-stopped}
     
     echo "${vm_name:-unknown}|${vm_status}|${vm_node:-unknown}"
@@ -64,14 +64,14 @@ echo "PROBLEMATIC PGs:"
 echo "================"
 
 for pg in $PROBLEM_PGS; do
-    # Get PG state from health detail
+    # Stav PG z health detail
     state=$(ceph health detail 2>/dev/null | grep "pg $pg " | sed 's/.*is //' | sed 's/, acting.*//')
     
-    # Extract pool ID from PG (format: poolid.pgnum)
+    # ID poolu z PG (format: poolid.pgnum)
     pool_id=$(echo "$pg" | cut -d'.' -f1)
     pool_name=${POOL_NAMES[$pool_id]}
     
-    # Get acting OSDs from pg query
+    # Acting OSD z pg query
     acting=$(ceph pg "$pg" query 2>/dev/null | jq -r '.acting | join(",")')
     
     echo ""
@@ -79,20 +79,20 @@ for pg in $PROBLEM_PGS; do
     echo "  State: $state"
     echo "  Acting OSDs: $acting"
     
-    # Get unique image IDs in this PG
+    # Unikatni ID image v tomto PG
     echo "  Analyzing objects..."
     
     declare -A PG_IMAGES
     
     while read -r obj; do
-        # Extract image ID from object name (rbd_data.IMAGEID.OFFSET)
+        # ID image z nazvu objektu (rbd_data.IMAGEID.OFFSET)
         if [[ "$obj" =~ rbd_data\.([a-f0-9]+)\. ]]; then
             img_id="${BASH_REMATCH[1]}"
             ((PG_IMAGES[$img_id]++))
         fi
     done < <(rados --pgid "$pg" ls 2>/dev/null)
     
-    # Check which images exist and which are orphaned
+    # Ktere image existuji a ktere jsou osirele
     affected_vms=""
     orphaned_list=""
     
@@ -101,7 +101,7 @@ for pg in $PROBLEM_PGS; do
         img_name=${IMAGE_MAP["$pool_name:$img_id"]}
         
         if [ -n "$img_name" ]; then
-            # Image exists - find which VM uses it
+            # Image existuje - dohledat VM, ktera ho pouziva
             vmid=$(echo "$img_name" | grep -oP '(vm|base)-\K[0-9]+')
             if [ -n "$vmid" ]; then
                 vm_info=$(get_vm_info "$vmid")
@@ -112,7 +112,7 @@ for pg in $PROBLEM_PGS; do
                 affected_vms+="      Disk: $img_name ($obj_count objects)\n"
             fi
         else
-            # Orphaned - no RBD image
+            # Osirely objekt - bez RBD image
             orphaned_list+="    Image ID: $img_id ($obj_count objects) - NO RBD IMAGE\n"
         fi
     done

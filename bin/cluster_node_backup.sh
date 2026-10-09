@@ -1,35 +1,35 @@
 #!/bin/bash
 
-# Načtení konfiguračního souboru
+# Nacteni konfiguracniho souboru
 CONFIG_FILE="./cluster_node_backup.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 else
-    echo "Chyba: Konfigurační soubor $CONFIG_FILE nebyl nalezen!"
+    echo "Error: Config file $CONFIG_FILE not found!"
     exit 1
 fi
 
-# Export autentizačních proměnných pro PBS
+# Export autentizacnich promennych pro PBS
 export PBS_PASSWORD
 export PBS_FINGERPRINT
 
-# Funkce pro kontrolu, zda je uzel v seznamu ignorovaných
+# Funkce pro kontrolu, zda je uzel v seznamu ignorovanych
 is_ignored_node() {
     local NODE=$1
     for IGNORE_NODE in "${IGNORE_NODES[@]}"; do
         if [ "$NODE" == "$IGNORE_NODE" ]; then
-            return 0  # Uzlu se zálohování přeskočí
+            return 0  # Zaloha uzlu se preskoci
         fi
     done
-    return 1  # Uzlu se zálohování provede
+    return 1  # Zaloha uzlu se provede
 }
 
-# Funkce pro spuštění zálohy na uzlu
+# Funkce pro spusteni zalohy na uzlu
 backup_node() {
     local NODE=$1
-    echo "Provádím zálohu pro uzel: $NODE"
+    echo "Running backup for node: $NODE"
 
-    # Spuštění zálohy na uzlu; heslo jde přes stdin, ne v příkazové řádce (viditelné v ps)
+    # Spusteni zalohy na uzlu; heslo jde pres stdin, ne v prikazove radce (viditelne v ps)
     printf '%s\n%s\n' "$PBS_PASSWORD" "$PBS_FINGERPRINT" | ssh -o BatchMode=yes root@$NODE "
         read -r PBS_PASSWORD; read -r PBS_FINGERPRINT
         export PBS_PASSWORD PBS_FINGERPRINT
@@ -37,28 +37,28 @@ backup_node() {
         --repository root@pam@$PBS_SERVER:$PBS_STORAGE  > /dev/null 2>&1
     " &
 
-    # Uložení PID procesu zálohy na pozadí
+    # Ulozeni PID procesu zalohy na pozadi
     JOBS+=($!)
 }
 
-# Pole pro uchování spuštěných záloh na pozadí
+# Pole pro uchovani zaloh spustenych na pozadi
 JOBS=()
 
-# Získání seznamu všech uzlů z Proxmox clusteru
+# Ziskani seznamu vsech uzlu z Proxmox clusteru
 ALL_NODES=$(pvesh get /nodes --output-format json | jq -r '.[].node')
 
-# Spuštění zálohy pro každý uzel, který není v seznamu ignorovaných
+# Spusteni zalohy pro kazdy uzel, ktery neni v seznamu ignorovanych
 for NODE in $ALL_NODES; do
     if is_ignored_node "$NODE"; then
-        echo "Přeskakuji zálohu pro uzel: $NODE"
+        echo "Skipping backup for node: $NODE"
         continue
     fi
     backup_node "$NODE"
 done
 
-# Čekání na dokončení všech záloh
+# Cekani na dokonceni vsech zaloh
 for job in "${JOBS[@]}"; do
     wait "$job"
 done
 
-echo "Zálohování všech uzlů dokončeno."
+echo "Backup of all nodes completed."

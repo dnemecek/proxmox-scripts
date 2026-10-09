@@ -1,7 +1,7 @@
 #!/bin/bash
 # vm_baseline_policy.sh
 # Verze: 1.1.0
-# Popis: Ansible-ready skript pro VM baseline policy enforcement
+# Popis: Ansible-ready skript pro vynuceni VM baseline policy
 #        (cpu, machine, balloon, numa, agent, network queues)
 # Umisteni: /root/bin/vm_baseline_policy.sh
 # Pouziti: ./vm_baseline_policy.sh [VMID...]
@@ -10,10 +10,10 @@
 #          ./vm_baseline_policy.sh 100 101   - zpracuje VM 100 a 101
 #
 # Changelog:
-#   1.1.0 - agent drift detekce porovnava cely string s normalizaci
-#           (sort sub-options) misto jen enabled+fstrim. Nyni spravne
-#           detekuje zmeny ve freeze-fs, type, atd.
-#   1.0.0 - inicialni verze
+#   1.1.0 - detekce agent driftu porovnava cely retezec po normalizaci
+#           (serazeni sub-options) misto jen enabled+fstrim. Nyni spravne
+#           detekuje zmeny ve freeze-fs, type atd.
+#   1.0.0 - prvni verze
 
 set -o pipefail
 
@@ -28,7 +28,7 @@ DEFAULT_LOG_FILE="/var/log/pve/vm_baseline_policy.log"
 DEFAULT_BACKUP_DIR="/var/backups/vm_baseline_policy"
 CURRENT_NODE=$(hostname)
 
-# Ansible output promenne
+# Promenne pro Ansible vystup
 CHANGED=false
 CHANGES_MADE=0
 ERRORS=0
@@ -68,32 +68,32 @@ show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS] [VMID...]
 
-Ansible-ready skript pro VM baseline policy enforcement.
-Standardizuje: cpu, machine, balloon, numa, agent, network queues.
+Ansible-ready script for VM baseline policy enforcement.
+Standardizes: cpu, machine, balloon, numa, agent, network queues.
 
-Detekce OS podle prefixu ostype:
+OS detection by ostype prefix:
   l* (l24, l26)     -> Linux baseline
   w* (win*, w2k*)   -> Windows baseline
-  other, solaris    -> Vylouceno (vyzaduje rucni nastaveni)
+  other, solaris    -> Excluded (requires manual configuration)
 
-Argumenty:
-  VMID...       Volitelne: Jedno nebo vice VM ID ke zpracovani.
-                Pokud neni zadano, zpracuji se vsechny VM.
+Arguments:
+  VMID...       Optional: One or more VM IDs to process.
+                If not specified, all VMs are processed.
 
-Volby:
-  -h, --help    Zobrazi tuto napovedu
-  -V, --version Zobrazi verzi
+Options:
+  -h, --help    Show this help message and exit
+  -V, --version Show version and exit
 
-Priklady:
-  $SCRIPT_NAME              Zpracuje vsechny VM
-  $SCRIPT_NAME 100          Zpracuje jen VM 100
-  $SCRIPT_NAME 100 101 102  Zpracuje VM 100, 101 a 102
+Examples:
+  $SCRIPT_NAME              Process all VMs
+  $SCRIPT_NAME 100          Process only VM 100
+  $SCRIPT_NAME 100 101 102  Process VMs 100, 101, and 102
 
-Konfigurace: $CONFIG_FILE
-Log soubor: \$LOG_FILE (vychozi: $DEFAULT_LOG_FILE)
+Configuration: $CONFIG_FILE
+Log file: \$LOG_FILE (default: $DEFAULT_LOG_FILE)
 
-Poznamka: Zmena parametru 'machine' vyzaduje VM poweroff/poweron.
-          Prosty restart NESTACI.
+Note: Changes to 'machine' parameter require VM poweroff/poweron.
+      A simple reboot is NOT sufficient.
 EOF
     exit 0
 }
@@ -104,7 +104,7 @@ show_version() {
 }
 
 # ===========================================
-# FUNKCE: LOGOVANI A OUTPUT
+# FUNKCE: LOGOVANI A VYSTUP
 # ===========================================
 
 log() {
@@ -289,7 +289,7 @@ calculate_net_queues() {
             echo "$limit"
         fi
     else
-        # Fixni hodnota
+        # Pevna hodnota
         echo "$queues_setting"
     fi
 }
@@ -314,7 +314,7 @@ machine_needs_update() {
 
 # Kontrola zda CPU potrebuje update
 # Striktni porovnani - CPU musi byt PRESNE baseline hodnota
-# cpu: host exponuje vsechny CPU features, extra flagy jsou redundantni
+# cpu: host zpristupni vsechny CPU features, dalsi flagy jsou zbytecne
 cpu_needs_update() {
     local current="$1"
     local target="$2"
@@ -348,16 +348,16 @@ net_needs_update() {
     return 1
 }
 
-# Kontrola zda agent string potrebuje update (cely string compare)
-# Proxmox muze normalizovat poradi sub-options pri ulozeni, takze
-# pred porovnanim sortujeme oba stringy abychom dostali idempotent compare.
+# Kontrola, zda agent retezec potrebuje update (porovnani celeho retezce)
+# Proxmox muze pri ulozeni zmenit poradi sub-options, proto se oba
+# retezce pred porovnanim seradi, aby bylo porovnani idempotentni.
 # Detekuje zmeny ve VSECH sub-options: enabled, fstrim_cloned_disks,
 # freeze-fs, type.
 agent_needs_update() {
     local current="$1"
     local target="$2"
 
-    # Normalizace: rozdelit po carce, sortovat, spojit zpet
+    # Normalizace: rozdelit po carce, seradit, spojit zpet
     local current_norm=$(echo "$current" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
     local target_norm=$(echo "$target" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
 
@@ -555,7 +555,7 @@ process_vm() {
     fi
 
     # === Kontrola agent ===
-    # Cely string compare s normalizaci (sort sub-options)
+    # Porovnani celeho retezce po normalizaci (serazeni sub-options)
     # Detekuje zmeny ve VSECH sub-options vcetne freeze-fs.
     if agent_needs_update "$current_agent" "$target_agent"; then
         log "INFO" "VM $vmid ($vm_name): agent drift: '$current_agent' -> '$target_agent'"
@@ -585,7 +585,7 @@ process_vm() {
         local net_name=$(echo "$line" | cut -d: -f1)
         local net_config=$(echo "$line" | cut -d: -f2- | sed 's/^ //')
 
-        # Preskocit non-virtio rozhrani
+        # Preskocit rozhrani, ktera nejsou virtio
         if [[ ! "$net_config" == *"virtio"* ]]; then
             log "DEBUG" "VM $vmid ($vm_name) $net_name: not virtio, skipping queues"
             continue
@@ -659,7 +659,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# Trim leading space
+# Oriznuti uvodni mezery
 TARGET_VMIDS=$(echo "$TARGET_VMIDS" | xargs)
 
 # Kontrola konfiguracniho souboru
@@ -671,7 +671,7 @@ fi
 # Nacteni konfigurace
 source "$CONFIG_FILE"
 
-# Nastaveni defaultu
+# Nastaveni vychozich hodnot
 LOG_FILE="${LOG_FILE:-$DEFAULT_LOG_FILE}"
 BACKUP_DIR="${BACKUP_DIR:-$DEFAULT_BACKUP_DIR}"
 DRY_RUN="${DRY_RUN:-true}"
@@ -707,14 +707,14 @@ for vmid in $vmids; do
     process_vm "$vmid"
 done
 
-# Log poweroff warning summary
+# Souhrnne varovani o poweroff do logu
 if [ ${#POWEROFF_VMIDS[@]} -gt 0 ]; then
     log "WARN" "=== VMs requiring poweroff/poweron: ${POWEROFF_VMIDS[*]} ==="
 fi
 
 log "INFO" "=== Finished: $CHANGES_MADE changes, $ERRORS errors, $SKIPPED skipped ==="
 
-# Ansible JSON output na stdout
+# Ansible JSON vystup na stdout
 output_json
 
 exit 0

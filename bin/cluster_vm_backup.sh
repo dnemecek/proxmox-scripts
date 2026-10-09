@@ -1,53 +1,53 @@
 #!/bin/bash
 
-# Načtení proměnných z externího konfiguračního souboru
+# Nacteni promennych z externiho konfiguracniho souboru
 CONFIG_FILE="./cluster_vm_backup.conf"
 if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 else
-    echo "Chyba: Konfigurační soubor $CONFIG_FILE nebyl nalezen!"
+    echo "Error: Config file $CONFIG_FILE not found!"
     exit 1
 fi
 
-# Export autentizačních proměnných
+# Export autentizacnich promennych
 export PBS_PASSWORD
 export PBS_FINGERPRINT
 
-# Funkce pro získání stáří poslední zálohy z PBS
+# Funkce pro zjisteni stari posledni zalohy z PBS
 get_backup_age_pbs() {
     local VMID=$1
     LAST_BACKUP_TIMESTAMP=$(proxmox-backup-client list --output-format json --repository "root@pam@$PBS_SERVER:$PBS_STORAGE" --ns "$NAMESPACE" | jq -r ".[] | select(.\"backup-id\" == \"$VMID\") | .\"last-backup\" // empty" | sort -nr | head -n1)
     
     if [ -z "$LAST_BACKUP_TIMESTAMP" ]; then
-        echo "NO_BACKUP"  # Pokud neexistuje záloha, vrátí "NO_BACKUP"
+        echo "NO_BACKUP"  # Pokud zaloha neexistuje, vrati "NO_BACKUP"
     else
         CURRENT_TIMESTAMP=$(date +%s)
         echo $(( (CURRENT_TIMESTAMP - LAST_BACKUP_TIMESTAMP) / 86400 ))
     fi
 }
 
-# Funkce pro kontrolu, zda je VM nebo LXC v seznamu ignorovaných na základě kombinace ID a jména
+# Funkce pro kontrolu, zda je VM nebo LXC v seznamu ignorovanych podle kombinace ID a jmena
 is_ignored_vm() {
     local VMID=$1
     local NAME=$2
     if [ ${#IGNORE_VMS[@]} -eq 0 ]; then
-        return 1  # Pokud je prázdná, žádné VM/LXC se neignorují
+        return 1  # Prazdny seznam = zadne VM/LXC se neignoruji
     fi
     for IGNORE_ENTRY in "${IGNORE_VMS[@]}"; do
         IFS=':' read -r IGNORE_ID IGNORE_NAME <<< "$IGNORE_ENTRY"
         
         if [ "$VMID" == "$IGNORE_ID" ] && [ "$NAME" == "$IGNORE_NAME" ]; then
-            return 0  # Ignoruje, pokud se ID i jméno shodují
+            return 0  # Ignoruje, pokud se shoduje ID i jmeno
         fi
     done
     return 1
 }
 
-# Funkce pro kontrolu, zda je uzel v seznamu ignorovaných
+# Funkce pro kontrolu, zda je uzel v seznamu ignorovanych
 is_ignored_node() {
     local NODE=$1
     if [ ${#IGNORE_NODES[@]} -eq 0 ]; then
-        return 1  # Pokud je prázdná, žádné uzly se neignorují
+        return 1  # Prazdny seznam = zadne uzly se neignoruji
     fi
     for IGNORE_NODE in "${IGNORE_NODES[@]}"; do
         if [ "$NODE" == "$IGNORE_NODE" ]; then
@@ -57,49 +57,49 @@ is_ignored_node() {
     return 1
 }
 
-# Získá seznam všech VM a LXC kontejnerů na všech uzlech včetně jména a prochází přímo ve smyčce
+# Ziska seznam vsech VM a LXC kontejneru na vsech uzlech vcetne jmena
 ALL_RESOURCES=$(pvesh get /cluster/resources --type vm --output-format json | jq -r '.[] | "\(.node) \(.type) \(.vmid) \(.name)"')
 
-# Pole pro uchování seznamu ignorovaných VM/LXC a spuštěných procesů
+# Pole pro seznam ignorovanych VM/LXC a spustenych procesu
 IGNORED_LIST=()
 JOBS=()
 
-# Používáme zde <<EOF pro čtení ze seznamu ALL_RESOURCES přímo ve smyčce
-echo "Seznam VM a LXC kontejnerů k zálohování:"
-echo "--------------------------------------"
+# Cteni seznamu ALL_RESOURCES primo ve smycce (here-string <<<)
+echo "VMs and LXC containers to back up:"
+echo "----------------------------------"
 while read -r NODE TYPE VMID NAME; do
     if is_ignored_vm "$VMID" "$NAME"; then
-        IGNORED_LIST+=("Uzel: $NODE | Typ: $TYPE | ID: $VMID | Jméno: $NAME | Důvod: IGNOROVÁNO (podle ID a jména)")
+        IGNORED_LIST+=("Node: $NODE | Type: $TYPE | ID: $VMID | Name: $NAME | Reason: IGNORED (by ID and name)")
         continue
     fi
 
     if is_ignored_node "$NODE"; then
-        IGNORED_LIST+=("Uzel: $NODE | Typ: $TYPE | ID: $VMID | Jméno: $NAME | Důvod: IGNOROVÁNO (podle uzlu)")
+        IGNORED_LIST+=("Node: $NODE | Type: $TYPE | ID: $VMID | Name: $NAME | Reason: IGNORED (by node)")
         continue
     fi
 
-    # Kontrola stáří zálohy
+    # Kontrola stari zalohy
     BACKUP_AGE=$(get_backup_age_pbs $VMID)
     if [ "$BACKUP_AGE" == "NO_BACKUP" ] || [ "$BACKUP_AGE" -gt "$DATE_LIMIT" ]; then
-        echo "Uzel: $NODE | Typ: $TYPE | ID: $VMID | Jméno: $NAME | Stav: NO_BACKUP / Záloha starší než $DATE_LIMIT dní"
+        echo "Node: $NODE | Type: $TYPE | ID: $VMID | Name: $NAME | Status: NO_BACKUP / backup older than $DATE_LIMIT days"
         
-        # Spuštění zálohy na pozadí
-        echo "Spouštím zálohu pro VM/LXC ID: $VMID na uzlu $NODE"
+        # Spusteni zalohy na pozadi
+        echo "Starting backup of VM/LXC ID: $VMID on node $NODE"
         ssh -n -o BatchMode=yes root@$NODE "vzdump $VMID --mode snapshot --storage $PVE_STORAGE --compress zstd --quiet 1" &
         
-        # Uložení PID pozadí procesu
+        # Ulozeni PID procesu na pozadi
         JOBS+=($!)
     fi
 done <<< "$ALL_RESOURCES"
 
-# Čekání na dokončení všech spuštěných záloh
+# Cekani na dokonceni vsech spustenych zaloh
 for job in "${JOBS[@]}"; do
     wait "$job"
 done
 
-# Výpis ignorovaných VM/LXC na konci
+# Vypis ignorovanych VM/LXC na konci
 echo
-echo "Ignorovaná VM a LXC kontejnery:"
+echo "Ignored VMs and LXC containers:"
 echo "-------------------------------"
 for IGNORED_ITEM in "${IGNORED_LIST[@]}"; do
     echo "$IGNORED_ITEM"

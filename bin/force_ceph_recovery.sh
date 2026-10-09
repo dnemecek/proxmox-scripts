@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Získá seznam poolů a spustí force-recovery a force-backfill pro každý kromě .mgr
+# Ziska seznam poolu a spusti force-recovery a force-backfill pro kazdy krome .mgr
 for pool in $(ceph osd pool ls); do
     if [ "$pool" != ".mgr" ]; then
         echo "Forcing recovery and backfill for pool: $pool"
@@ -10,6 +10,6 @@ for pool in $(ceph osd pool ls); do
     fi
 done
 
-# Zobrazí stav
+# Zobrazi stav
 echo "Current cluster status:"
 ceph -s

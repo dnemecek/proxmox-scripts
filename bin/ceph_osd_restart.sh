@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/${SCRIPT_NAME}.conf"
 LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 
-# Defaults (mohou byt prepesany v .conf)
+# Vychozi hodnoty (lze prepsat v .conf)
 RESTART_DELAY=90
 CURRENT_NODE=$(hostname)
 
@@ -43,7 +43,7 @@ SKIPPED=0
 FAILED=0
 
 # -----------------------------------------------------------------------------
-# Funkce - Logging
+# Funkce - Logovani
 # -----------------------------------------------------------------------------
 log_msg() {
     local level="$1"
@@ -58,7 +58,7 @@ log_warn()  { log_msg "WARN"  "$1"; }
 log_error() { log_msg "ERROR" "$1"; }
 
 # -----------------------------------------------------------------------------
-# Funkce - JSON Output (stdout pro Ansible)
+# Funkce - JSON vystup (stdout pro Ansible)
 # -----------------------------------------------------------------------------
 json_output() {
     local changed="$1"
@@ -185,7 +185,7 @@ restart_osd() {
 }
 
 # -----------------------------------------------------------------------------
-# Argument parsing
+# Zpracovani argumentu
 # -----------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -210,7 +210,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # -----------------------------------------------------------------------------
-# Main
+# Hlavni beh
 # -----------------------------------------------------------------------------
 log_info "=== ${SCRIPT_NAME} v${SCRIPT_VERSION} started ==="
 log_info "Mode: ${MODE}, Dry-run: ${DRY_RUN}"
@@ -226,7 +226,7 @@ fi
 osd_count=${#osd_list[@]}
 log_info "Found ${osd_count} OSD(s) to process"
 
-# Kontrola - zadne OSD
+# Kontrola - zadna OSD
 if [[ $osd_count -eq 0 ]]; then
     log_info "No OSDs to restart"
     if [[ "$MODE" == "slow" ]]; then
@@ -237,7 +237,7 @@ if [[ $osd_count -eq 0 ]]; then
     exit 0
 fi
 
-# Dry-run - pouze vypis
+# Dry-run - jen vypis
 if [[ "$DRY_RUN" == "true" ]]; then
     log_info "[DRY-RUN] Would restart: ${osd_list[*]}"
     json_output "false" "Mode: ${MODE}, Dry-run: ${osd_count} OSD(s) would be restarted"
@@ -263,7 +263,7 @@ ceph crash archive-all &>/dev/null || true
 log_info "Completed: Restarted=${RESTARTED}, Skipped=${SKIPPED}, Failed=${FAILED}"
 log_info "=== ${SCRIPT_NAME} finished ==="
 
-# JSON output
+# JSON vystup
 if [[ $FAILED -gt 0 ]]; then
     json_output "true" "Mode: ${MODE}, Restarted: ${RESTARTED}, Skipped: ${SKIPPED}, Failed: ${FAILED}"
     exit 1
