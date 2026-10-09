@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # scrub_schedule.sh - Casova politika pro Ceph scrub a recovery
-# Verze: 2.0.0
-# Datum: 2026-04-30
+# Verze: 2.1.0
+# Datum: 2026-10-09
 #
 # Cil: V produkcnich hodinach minimalizovat dopad scrub/recovery na VM workload.
 #      Off-hours a vikend = catch-up.
@@ -15,6 +15,11 @@
 #   scrub_schedule.sh --version
 #   scrub_schedule.sh --help
 #
+# mClock (Ceph Quincy+): osd_max_backfills a osd_recovery_max_active_* plati jen
+# s osd_mclock_override_recovery_settings=true, jinak je mClock vraci na vychozi
+# hodnoty. Override zapne promenna mclock_override_recovery_settings=true v configu
+# (vychozi false = puvodni chovani, limity se pod mClockem nenastavuji).
+#
 # Cron priklad (kazdou hodinu):
 #   0 * * * * /root/bin/scrub_schedule.sh >/dev/null 2>&1
 
@@ -22,7 +27,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # === Konstanty ===
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 readonly CONFIG_FILE="${SCRUB_CONFIG_FILE:-/root/bin/scrub_schedule.conf}"
 readonly LOG_DIR="${SCRUB_LOG_DIR:-/var/log/ceph}"
 readonly LOG_FILE="${LOG_DIR}/scrub_schedule.log"
@@ -51,7 +56,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --help|-h)
-            sed -n '2,20p' "$0" | sed 's/^# \?//'
+            sed -n '2,25p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *)
@@ -131,6 +136,13 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     exit 3
 fi
 
+# Volitelne (od 2.1.0): bez promenne zustava puvodni chovani
+mclock_override_recovery_settings="${mclock_override_recovery_settings:-false}"
+if [[ "${mclock_override_recovery_settings}" != "true" && "${mclock_override_recovery_settings}" != "false" ]]; then
+    log_error "mclock_override_recovery_settings musi byt true nebo false, je '${mclock_override_recovery_settings}'"
+    exit 3
+fi
+
 # === Ceph wrapper s error handlingem ===
 ceph_set() {
     local key="$1" value="$2"
@@ -142,6 +154,33 @@ ceph_set() {
         log_error "Selhalo: ceph config set osd ${key} ${value}"
         return 1
     fi
+    # Ceph muze zmenu prijmout bez chyby a presto ji neulozit (napr. limity
+    # recovery pod mClockem bez override) -> overit zpetnym ctenim
+    local actual
+    actual=$(ceph config get osd "${key}" 2>/dev/null || echo "?")
+    # Cisla porovnat numericky (Ceph vraci 5.0 jako 5.000000)
+    if [[ "${actual}" != "${value}" ]] && \
+       ! awk -v a="${actual}" -v b="${value}" \
+           'BEGIN { n = "^-?[0-9]+([.][0-9]+)?$"; exit !(a ~ n && b ~ n && a + 0 == b + 0) }'; then
+        log_warn "ceph config set osd ${key} ${value}: plati '${actual}'"
+    fi
+}
+
+# Limity recovery/backfill. Pod mClockem jen s override (viz hlavicka), jinak
+# by se nastaveni tvarilo jako provedene a nemelo by ucinek.
+apply_recovery_limits() {
+    local using_mclock="$1" backfills="$2" max_hdd="$3" max_ssd="$4"
+    if [[ "${using_mclock}" -eq 1 ]]; then
+        if [[ "${mclock_override_recovery_settings}" != "true" ]]; then
+            log_warn "   mClock bez override: max_backfills a recovery_max_active ridi mClock (mclock_override_recovery_settings=false)"
+            ceph_set osd_mclock_override_recovery_settings false
+            return 0
+        fi
+        ceph_set osd_mclock_override_recovery_settings true
+    fi
+    ceph_set osd_max_backfills               "${backfills}"
+    ceph_set osd_recovery_max_active_hdd     "${max_hdd}"
+    ceph_set osd_recovery_max_active_ssd     "${max_ssd}"
 }
 
 # === Detekce mClock scheduleru ===
@@ -178,9 +217,8 @@ apply_production_policy() {
 
     # Tvrde limity - funguji v obou schedulerech
     ceph_set osd_max_scrubs                  "${scrubs_in_production}"
-    ceph_set osd_max_backfills               "${production_max_backfills}"
-    ceph_set osd_recovery_max_active_hdd     "${production_recovery_max_active_hdd}"
-    ceph_set osd_recovery_max_active_ssd     "${production_recovery_max_active_ssd}"
+    apply_recovery_limits "${using_mclock}" "${production_max_backfills}" \
+        "${production_recovery_max_active_hdd}" "${production_recovery_max_active_ssd}"
     ceph_set osd_deep_scrub_interval         "${deep_scrub_interval_production}"
     ceph_set osd_deep_scrub_stride           "${deep_scrub_stride_production}"
     ceph_set osd_scrub_sleep                 "${scrub_sleep_production}"
@@ -215,9 +253,8 @@ apply_off_hours_policy() {
     fi
 
     ceph_set osd_max_scrubs                  "${scrubs_off_hours}"
-    ceph_set osd_max_backfills               "${off_hours_max_backfills}"
-    ceph_set osd_recovery_max_active_hdd     "${off_hours_recovery_max_active_hdd}"
-    ceph_set osd_recovery_max_active_ssd     "${off_hours_recovery_max_active_ssd}"
+    apply_recovery_limits "${using_mclock}" "${off_hours_max_backfills}" \
+        "${off_hours_recovery_max_active_hdd}" "${off_hours_recovery_max_active_ssd}"
     ceph_set osd_deep_scrub_interval         "${deep_scrub_interval_off_hours}"
     ceph_set osd_deep_scrub_stride           "${deep_scrub_stride_off_hours}"
     ceph_set osd_scrub_sleep                 "${scrub_sleep_off_hours}"
