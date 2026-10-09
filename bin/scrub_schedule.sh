@@ -292,7 +292,7 @@ fi
 log_info "Pocet OSD: ${osd_count}"
 
 # Spolecne nastaveni - vzdy
-log_info "Nastavuji bazicke parametry (auto-repair, scrub okno, chunks)"
+log_info "Nastavuji zakladni parametry (auto-repair, scrub okno, chunks)"
 ceph_set osd_scrub_auto_repair      "${scrub_auto_repair}"
 ceph_set osd_scrub_begin_hour       "${scrub_begin_hour}"
 ceph_set osd_scrub_end_hour         "${scrub_end_hour}"
